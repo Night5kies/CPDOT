@@ -357,23 +357,28 @@ public:
     // infeasibility += infeasibility_terminal;
     infeasibility += pow(x[nvar_ - 1] - infeasibility_terminal, 2);
 
-    // for each robot
-    // relative position constraints
+    // --- formation shape constraints (λ_formation) ---
+    // slack variable = squared distance between adjacent robots in the polygon
+    T infeas_formation = T(0.0);
     for (int i = 0; i < nrows_; i++) {
       for (int j = 0; j < num_robot; j++) {
-        infeasibility += pow(x[1 + (NVar * num_robot + j) * nrows_ + i] - 
-                      ((x[1 + (0 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (0 + 7 * j) * nrows_ + i]) * (x[1 + (0 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (0 + 7 * j) * nrows_ + i]) + 
+        infeas_formation += pow(x[1 + (NVar * num_robot + j) * nrows_ + i] -
+                      ((x[1 + (0 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (0 + 7 * j) * nrows_ + i]) * (x[1 + (0 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (0 + 7 * j) * nrows_ + i]) +
                        (x[1 + (1 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (1 + 7 * j) * nrows_ + i]) * (x[1 + (1 + 7 * ((j + 1) % num_robot)) * nrows_ + i] - x[1 + (1 + 7 * j) * nrows_ + i])), 2);
       }
     }
-    // topological constraints
+    infeasibility += T(config_.opti_w_formation) * infeas_formation;
+
+    // --- topology consistency constraints (λ_topo) ---
+    // slack variable = signed cross-product (robot k outside edge p→Np)
+    T infeas_topo = T(0.0);
     for (int i = 0; i < nrows_; i++) {
       int topo_ind = 0;
       for (int k = 0; k < num_robot; k++) {
         for (int p = 0; p < num_robot; p++) {
           if (p != k && (p + 1) % num_robot != k) {
             int Np = (p + 1) % num_robot;
-            infeasibility += pow(x[1 + (NVar * num_robot + num_robot + topo_ind) * nrows_ + i] -
+            infeas_topo += pow(x[1 + (NVar * num_robot + num_robot + topo_ind) * nrows_ + i] -
                             ((x[1 + (0 + 7 * k) * nrows_ + i] - x[1 + (0 + 7 * p) * nrows_ + i]) * (x[1 + (1 + 7 * p) * nrows_ + i] - x[1 + (1 + 7 * Np) * nrows_ + i]) +
                              (x[1 + (1 + 7 * k) * nrows_ + i] - x[1 + (1 + 7 * p) * nrows_ + i]) * (x[1 + (0 + 7 * Np) * nrows_ + i] - x[1 + (0 + 7 * p) * nrows_ + i])), 2);
             topo_ind++;
@@ -381,19 +386,23 @@ public:
         }
       }
     }
-    // safe corridor constraints
+    infeasibility += T(config_.opti_w_topo) * infeas_topo;
+
+    // --- safe corridor constraints (λ_sfc, obstacle crossing preference) ---
+    // slack variable = signed distance of disc centre from corridor half-plane
+    T infeas_sfc = T(0.0);
     int cont = 0;
     for(int i = 0; i < nrows_; i++) {
       for (int j = 0; j < num_robot; j++) {
         for (int n = 0; n < corridor_cons_[j][i].size(); n++) {
-          infeasibility += pow(x[1 + (NVar * num_robot + num_robot + num_robot * (num_robot - 2)) * nrows_ + cont] - (
+          infeas_sfc += pow(x[1 + (NVar * num_robot + num_robot + num_robot * (num_robot - 2)) * nrows_ + cont] - (
                             (x[1 + (0 + 7 * j) * nrows_ + i] + config_.vehicle.disc_coefficients[0] * cos(x[1 + (2 + 7 * j) * nrows_ + i])) * corridor_cons_[j][i][n][0] +
                             (x[1 + (1 + 7 * j) * nrows_ + i] + config_.vehicle.disc_coefficients[0] * cos(x[1 + (2 + 7 * j) * nrows_ + i])) * corridor_cons_[j][i][n][1] -
                             corridor_cons_[j][i][n][2]), 2);
           cont++;
         }
         for (int n = 0; n < corridor_cons_[j][i].size(); n++) {
-          infeasibility += pow(x[1 + (NVar * num_robot + num_robot + num_robot * (num_robot - 2)) * nrows_ + cont] - (
+          infeas_sfc += pow(x[1 + (NVar * num_robot + num_robot + num_robot * (num_robot - 2)) * nrows_ + cont] - (
                             (x[1 + (0 + 7 * j) * nrows_ + i] + config_.vehicle.disc_coefficients[1] * cos(x[1 + (2 + 7 * j) * nrows_ + i])) * corridor_cons_[j][i][n][0] +
                             (x[1 + (1 + 7 * j) * nrows_ + i] + config_.vehicle.disc_coefficients[1] * sin(x[1 + (2 + 7 * j) * nrows_ + i])) * corridor_cons_[j][i][n][1] -
                             corridor_cons_[j][i][n][2]), 2);
@@ -401,6 +410,7 @@ public:
         }
       }
     }
+    infeasibility += T(config_.opti_w_sfc) * infeas_sfc;
     // 
     // // taut constraints
     // for (int i = 0; i < nrows_; i++) {

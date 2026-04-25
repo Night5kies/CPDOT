@@ -47,7 +47,8 @@ public:
   double& cost,
   int& solve_success,
   double& e_max, double& e_avg,
-  double& avg, double& std);
+  double& avg, double& std,
+  double& final_infeasibility);
   void GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons);
 
 private:

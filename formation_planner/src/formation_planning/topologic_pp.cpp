@@ -7,8 +7,9 @@
  * @copyright Copyroght(c) 2023
 */
 #include <ros/ros.h>
-#include <ros/package.h> 
+#include <ros/package.h>
 #include <memory>
+#include <fstream>
 #include "formation_planner/formation_planner.h"
 #include "formation_planner/visualization/plot.h"
 
@@ -31,6 +32,7 @@
 #include <vector>
 #include <cstdlib>
 #include <ctime>
+#include <limits>
 #include <omp.h>
 
 using namespace formation_planner;
@@ -489,6 +491,45 @@ int main(int argc, char **argv) {
   std::vector<int> num_obs_set = {10, 20, 30, 40, 50};
   // std::vector<int> num_robot_set = {3, 4, 5};
   ros::NodeHandle nh;
+
+  // --- sweep parameters (all settable via rosparam, no recompile needed) ---
+  int   n_trials, random_seed;
+  double opti_t_p, opti_w_a_p, opti_w_omega_p, opti_w_penalty0_p;
+  double opti_w_formation_p, opti_w_topo_p, opti_w_sfc_p;
+  nh.param("n_trials",         n_trials,            20);
+  nh.param("random_seed",      random_seed,         42);
+  nh.param("opti_t",           opti_t_p,            config_->opti_t);
+  nh.param("opti_w_a",         opti_w_a_p,          config_->opti_w_a);
+  nh.param("opti_w_omega",     opti_w_omega_p,      config_->opti_w_omega);
+  nh.param("opti_w_penalty0",  opti_w_penalty0_p,   config_->opti_w_penalty0);
+  nh.param("opti_w_formation", opti_w_formation_p,  config_->opti_w_formation);
+  nh.param("opti_w_topo",      opti_w_topo_p,       config_->opti_w_topo);
+  nh.param("opti_w_sfc",       opti_w_sfc_p,        config_->opti_w_sfc);
+  config_->opti_t           = opti_t_p;
+  config_->opti_w_a         = opti_w_a_p;
+  config_->opti_w_omega     = opti_w_omega_p;
+  config_->opti_w_penalty0  = opti_w_penalty0_p;
+  config_->opti_w_formation = opti_w_formation_p;
+  config_->opti_w_topo      = opti_w_topo_p;
+  config_->opti_w_sfc       = opti_w_sfc_p;
+  ROS_INFO("[sweep] n_trials=%d seed=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
+           n_trials, random_seed, config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
+           config_->opti_w_formation, config_->opti_w_topo, config_->opti_w_sfc);
+
+  // --- CSV output ---
+  std::string pkg_path = ros::package::getPath("formation_planner");
+  std::string csv_path = pkg_path + "/traj_result/sweep_results.csv";
+  bool csv_new = !std::ifstream(csv_path).good();
+  std::ofstream csv_file(csv_path, std::ios::app);
+  if (csv_new) {
+    csv_file << "num_robot,opti_t,opti_w_a,opti_w_omega,opti_w_penalty0,"
+             << "opti_w_formation,opti_w_topo,opti_w_sfc,"
+             << "seed,trial,trial_success,solve_success,"
+             << "success_strict,success_any_solution,success_feasible,"
+             << "final_infeasibility,n_solutions,"
+             << "time_topo_s,time_filter_s,time_coarse_s,time_to_s,time_total_s,"
+             << "outer_iters,inner_iters,tf_s,distance_m\n";
+  }
   std::vector<ros::Publisher> path_pub_set;
   interactive_markers::InteractiveMarkerServer server_("/liom_obstacle");
   math::GenerateObstacle generateobs;
@@ -543,6 +584,8 @@ int main(int argc, char **argv) {
   bool success = false;
   bool solve_fail = false;
   bool show_cr = false;
+  int completed_trials = 0;
+  int successful_trials = 0;
   // double start_point_x = -35;
   // double start_point_y = 0;
   // double goal_point_x = 35;
@@ -572,11 +615,14 @@ int main(int argc, char **argv) {
       for (int obs_num_ind = 0; obs_num_ind < num_obs_set.size(); obs_num_ind++) {
         // int num_obs = num_obs_set[obs_num_ind];
         int num_obs = 70;
-        for (int case_num = 0; case_num < 100; case_num++) {
-          double start_point_x = -15;
-          double start_point_y = 0;
-          double goal_point_x = 15;
-          double goal_point_y = 0;
+        for (int case_num = 0; case_num < n_trials && ros::ok(); case_num++) {
+          // seeded per-trial start/goal variation
+          std::mt19937 trial_rng(random_seed + case_num);
+          std::uniform_real_distribution<double> lateral(-8.0, 8.0);
+          double start_point_x = -15.0;
+          double start_point_y = lateral(trial_rng);
+          double goal_point_x  =  15.0;
+          double goal_point_y  = lateral(trial_rng);
           // double start_point_x = -26.222;
           // double start_point_y = -8.067;
           // double goal_point_x = 24.108;
@@ -603,6 +649,7 @@ int main(int argc, char **argv) {
           int solve_success = 0;
           int iteration_num_inner = 0;
           int iteration_num_outter = 0;
+          double final_infeasibility = std::numeric_limits<double>::quiet_NaN();
           double e_max = 0.0;
           double e_avg = 0.0;
           double avg = 0.0; 
@@ -682,11 +729,33 @@ int main(int argc, char **argv) {
           {
             std::vector<FullStates> local_best_solution_set;
             double local_best_tf = std::numeric_limits<double>::max();
+            std::vector<double> local_best_coarse_path_time_set;
+            std::vector<double> local_best_solve_time_set;
+            int local_best_solve_success = 0;
+            int local_best_iteration_num_inner = 0;
+            int local_best_iteration_num_outter = 0;
+            double local_best_cost = 0.0;
+            double local_best_final_infeasibility = std::numeric_limits<double>::quiet_NaN();
+            double local_best_e_max = 0.0;
+            double local_best_e_avg = 0.0;
+            double local_best_avg = 0.0;
+            double local_best_std = 0.0;
             
             #pragma omp for nowait
             // for (int i = 0; i < combinations_new.size(); i++) {
             int iter_outer_max = 5 > combinations_new.size() ? combinations_new.size() : 5;
             for (int i = 0; i < iter_outer_max; i++) {
+              std::vector<double> local_coarse_path_time_set;
+              std::vector<double> local_solve_time_set;
+              int local_iteration_num_inner = 0;
+              int local_iteration_num_outter = 0;
+              double local_cost = 0.0;
+              int local_solve_success = 0;
+              double local_final_infeasibility = std::numeric_limits<double>::quiet_NaN();
+              double local_e_max = 0.0;
+              double local_e_avg = 0.0;
+              double local_avg = 0.0;
+              double local_std = 0.0;
               corridors_sets.clear();
               keyPts.clear();
               hPolys_sets.clear();
@@ -709,24 +778,46 @@ int main(int argc, char **argv) {
                 // if(!planner_->Plan(solution, start_set[2], goal_set[2], iris_problem, solution, coarse_path_time, solve_time_leader, show_cr, corridors_sets[2])) {
                 //   ROS_ERROR("re-plan trajectory optimization failed!");
                 // }
-              if(!planner_->Plan_fm(
-                local_solution_set, start_set, goal_set, iris_problem, local_solution_set, coarse_path_time_set, 
-                solve_time_set, show_cr, polys_inflat_, hyperparam_sets, path_pub_set, iteration_num_inner, cost, solve_success,
-                e_max, e_avg, avg, std)) {
+              bool plan_succeeded = planner_->Plan_fm(
+                local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set, 
+                local_solve_time_set, show_cr, polys_inflat_, hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost, local_solve_success,
+                local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility);
+              bool has_local_solution =
+                !local_solution_set.empty() && !local_solution_set[0].states.empty();
+              if (has_local_solution) {
+                double current_tf = local_solution_set[0].tf;
+                if (current_tf < local_best_tf) {
+                  local_best_tf = current_tf;
+                  local_best_solution_set = local_solution_set;
+                  local_best_coarse_path_time_set = local_coarse_path_time_set;
+                  local_best_solve_time_set = local_solve_time_set;
+                  local_best_solve_success = local_solve_success;
+                  local_best_iteration_num_inner = local_iteration_num_inner;
+                  local_best_iteration_num_outter = local_iteration_num_outter + 1;
+                  local_best_cost = local_cost;
+                  local_best_final_infeasibility = local_final_infeasibility;
+                  local_best_e_max = local_e_max;
+                  local_best_e_avg = local_e_avg;
+                  local_best_avg = local_avg;
+                  local_best_std = local_std;
+                }
+              }
+              if(!plan_succeeded) {
                 #pragma omp critical 
                 {
-                  ROS_ERROR("re-plan trajectory optimization failed!");
+                  if (has_local_solution) {
+                    ROS_WARN("re-plan did not fully converge; keeping best generated solution set "
+                             "(n=%zu, final_infeasibility=%g, solve_success=%d)",
+                             local_solution_set.size(), local_final_infeasibility, local_solve_success);
+                  } else {
+                    ROS_ERROR("re-plan trajectory optimization failed without producing a usable solution!");
+                  }
                 }
-                iteration_num_outter++;
+                local_iteration_num_outter++;
                 continue;
               }
               else {
-                double current_tf = local_solution_set[0].tf;
-                if (current_tf < local_best_tf) {
-                    local_best_tf = current_tf;
-                    local_best_solution_set = local_solution_set;
-                }
-                iteration_num_outter++;
+                local_iteration_num_outter++;
                 break;
               }
             }
@@ -734,8 +825,19 @@ int main(int argc, char **argv) {
             #pragma omp critical 
             {
               if (local_best_tf < best_tf) {
-                  best_tf = local_best_tf;
-                  solution_set_opt = local_best_solution_set;
+                best_tf = local_best_tf;
+                solution_set_opt = local_best_solution_set;
+                coarse_path_time_set = local_best_coarse_path_time_set;
+                solve_time_set = local_best_solve_time_set;
+                solve_success = local_best_solve_success;
+                iteration_num_inner = local_best_iteration_num_inner;
+                iteration_num_outter = local_best_iteration_num_outter;
+                cost = local_best_cost;
+                final_infeasibility = local_best_final_infeasibility;
+                e_max = local_best_e_max;
+                e_avg = local_best_e_avg;
+                avg = local_best_avg;
+                std = local_best_std;
               }
             }
           }
@@ -771,7 +873,7 @@ int main(int argc, char **argv) {
           double coarse_time = 0.0;
           double solve_time = 0.0;
           std::vector<double> new_vector(15);
-          if (solution_set_opt.empty() || solve_success == 0) {
+          if (solution_set_opt.empty()) {
               new_vector[0] = 0.0; 
               new_vector[1] = 0.0;
               new_vector[2] = 0.0;
@@ -817,11 +919,57 @@ int main(int argc, char **argv) {
             new_vector[13] = avg;
             new_vector[14] = std; 
           }
-          // writeVectorToYAML(new_vector, "/home/weijian/CPDOT/src/formation_planner/traj_result/icra_result/ablation_without_" + std::to_string(num_robot) + std::to_string(num_obs) + ".yaml");
+          // --- write one CSV row per trial ---
+          int n_solutions = static_cast<int>(solution_set_opt.size());
+          int success_strict = (!solution_set_opt.empty() && solve_success == 1) ? 1 : 0;
+          int success_any_solution = solution_set_opt.empty() ? 0 : 1;
+          int success_feasible = (std::isfinite(final_infeasibility) &&
+                                  final_infeasibility < config_->opti_varepsilon_tol) ? 1 : 0;
+          int trial_success = success_any_solution;
+          csv_file << num_robot << ","
+                   << config_->opti_t << ","
+                   << config_->opti_w_a << ","
+                   << config_->opti_w_omega << ","
+                   << config_->opti_w_penalty0 << ","
+                   << config_->opti_w_formation << ","
+                   << config_->opti_w_topo << ","
+                   << config_->opti_w_sfc << ","
+                   << random_seed << ","
+                   << case_num << ","
+                   << trial_success << ","
+                   << solve_success << ","
+                   << success_strict << ","
+                   << success_any_solution << ","
+                   << success_feasible << ","
+                   << final_infeasibility << ","
+                   << n_solutions << ","
+                   << new_vector[6] << ","   // topo search time
+                   << new_vector[7] << ","   // filter/sort time
+                   << new_vector[8] << ","   // coarse path time (avg per outer iter)
+                   << new_vector[9] << ","   // TO solve time (avg per inner iter)
+                   << new_vector[10] << ","  // total OCP wall time
+                   << (int)new_vector[1] << ","  // outer iters
+                   << (int)new_vector[2] << ","  // inner iters
+                   << new_vector[4] << ","   // final tf
+                   << new_vector[0] << "\n"; // path distance
+          csv_file.flush();
+
+          completed_trials++;
+          if (trial_success) successful_trials++;
+          ROS_INFO("[sweep] trial %d/%d  success=%d  running_rate=%.1f%%",
+                   completed_trials, n_trials, trial_success,
+                   100.0 * successful_trials / completed_trials);
+
           for (int j = 0; j < solution_set_opt.size(); j++) {
             DrawTrajectoryRviz(solution_set_opt[j], config_, j, path_pub_set[j]);
           }
         }
+        // exit after the requested number of trials
+        csv_file.close();
+        ROS_INFO("[sweep] Done. %d/%d succeeded. Results: %s",
+                 successful_trials, n_trials, csv_path.c_str());
+        ros::shutdown();
+        return 0;
       }
     // }
     // for (int j = 0; j < solution_set_opt.size(); j++) {

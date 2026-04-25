@@ -49,7 +49,18 @@ struct PlannerConfig {
    * weighting parameter for control input omega
    */
   double opti_w_omega = 1.0;
-  
+
+  /**
+   * weighting parameters for constraint groups in eval_infeasibility.
+   * Setting any to 0.0 disables that constraint group (ablation).
+   * λ_formation: formation shape (squared inter-robot distances)
+   * λ_topo:      topology consistency (cross-product sign preservation)
+   * λ_sfc:       safe corridor membership (obstacle crossing preference)
+   */
+  double opti_w_formation = 1.0;
+  double opti_w_topo      = 1.0;
+  double opti_w_sfc       = 1.0;
+
   /**
    * weighting parameter for control input for diff-drive robot
    */

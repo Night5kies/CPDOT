@@ -19,6 +19,7 @@
 #include <nav_msgs/Path.h>
 #include <tf/transform_datatypes.h>
 #include <tf2/utils.h>
+#include <limits>
 using namespace forward_kinematics;
 namespace formation_planner {
 struct Data {
@@ -26,6 +27,33 @@ struct Data {
     double y;
     double theta;
 };
+
+namespace {
+
+void LogSolveFailure(const char* context,
+                     double infeasibility,
+                     double reference_tolerance) {
+  if (!std::isfinite(infeasibility)) {
+    ROS_ERROR("%s: solver returned a non-finite infeasibility (value=%f, tolerance=%.6f)",
+              context, infeasibility, reference_tolerance);
+    return;
+  }
+  ROS_ERROR("%s: solver returned failure (infeasibility=%.6f, tolerance=%.6f)",
+            context, infeasibility, reference_tolerance);
+}
+
+void LogInfeasibilityLimitExceeded(const char* context,
+                                   double infeasibility,
+                                   double reported_limit) {
+  if (!std::isfinite(infeasibility)) {
+    ROS_ERROR("%s: infeasibility is non-finite (value=%f)", context, infeasibility);
+    return;
+  }
+  ROS_ERROR("%s: infeasibility = %.6f exceeds limit %.6f",
+            context, infeasibility, reported_limit);
+}
+
+}
 // void operator>>(const YAML::Node& node, Data& data) {
 //     if (node["x"] && node["y"] && node["theta"]) {
 //         data.x = node["x"].as<double>();
@@ -720,10 +748,12 @@ bool FormationPlanner::Plan_fm(
   double& cost,
   int& solve_success,
   double& e_max, double& e_avg,
-  double& avg, double& std) {
+  double& avg, double& std,
+  double& final_infeasibility) {
   std::string package_path = ros::package::getPath("formation_planner");   
   double solve_time = 0.0;
   cost = 0.0;
+  final_infeasibility = std::numeric_limits<double>::quiet_NaN();
   std::vector<FullStates> result_opt; 
   int num_robot = start_set.size();
   VVCM vvcm;
@@ -829,7 +859,7 @@ bool FormationPlanner::Plan_fm(
     // }
     // visualization::Trigger();  
   }
-  double infeasibility;
+  double infeasibility = std::numeric_limits<double>::quiet_NaN();
   std::vector<double> height_cons, height;
   std::vector<double> height_cons_set(guess[0].states.size(), vvcm.xv2t);
   warm_start = 0;
@@ -856,12 +886,14 @@ bool FormationPlanner::Plan_fm(
     // generate good initial guess
     if (warm_start < 5) {
       if(!problem_->SolveFm(config_->opti_w_penalty0, constraints, guess, result, infeasibility, solve_time, corridor_cons, height_cons_set)) {
-        ROS_ERROR("infeasibility = %.6f > %.6f, trajectory may not be feasible", infeasibility, config_->opti_varepsilon_tol);
+        final_infeasibility = infeasibility;
+        LogSolveFailure("SolveFm failed during warm start", infeasibility, config_->opti_varepsilon_tol);
         return false;
-      }    
+      }
+      final_infeasibility = infeasibility;
       solve_time_set.push_back(solve_time);
       if(infeasibility > 1) {
-        ROS_ERROR("infeasibility = %.6f > %.6f, trajectory may not be feasible", infeasibility, config_->opti_varepsilon_tol);
+        LogInfeasibilityLimitExceeded("Warm-start infeasibility too large", infeasibility, 1.0);
         return false;
       }
       guess = result;
@@ -904,9 +936,11 @@ bool FormationPlanner::Plan_fm(
       result_opt = result;     
     } 
     if(!problem_->SolveFm(config_->opti_w_penalty0, constraints, guess, result, infeasibility, solve_time, corridor_cons, height_cons_set)) {
-      ROS_ERROR("solver failed!");
+      final_infeasibility = infeasibility;
+      LogSolveFailure("SolveFm failed during refinement", infeasibility, config_->opti_varepsilon_tol);
       return false;
     }
+    final_infeasibility = infeasibility;
     solve_time_set.push_back(solve_time);
     guess = result;
     int max_radius = 0.0; 
@@ -920,7 +954,7 @@ bool FormationPlanner::Plan_fm(
       return false;
     }
     if(infeasibility > 0.5) {
-      ROS_ERROR("infeasibility = %.6f > %.6f, trajectory may not be feasible", infeasibility, config_->opti_varepsilon_tol);
+      LogInfeasibilityLimitExceeded("Refinement infeasibility too large", infeasibility, 0.5);
       return false;
     }
     // if (warm_start > 5 && result_opt[0].tf < 100 && infeasibility < 0.001) {

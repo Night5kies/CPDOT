@@ -1,0 +1,56 @@
+# Sweep configuration for formation planner ablation study.
+# Edit param_grid freely — sweep.py takes the Cartesian product.
+# Each combination runs n_trials_per_config independent trials.
+
+# --- bookkeeping ---
+n_trials_per_config: 20          # trials per parameter combination
+timeout_per_trial_s: 60          # per-trial limit; total = this × n_trials + 30s buffer
+pkg_result_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result"
+output_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result/sweep_outputs"
+
+# --- parameter grid (Cartesian product of all lists) ---
+# This is the Phase 1 focused grid: 3 × 4 = 12 configs × 20 trials = 240 trials.
+# At ~15s median per trial that's ~1 hour. Expand Phase 2 after inspecting results.
+param_grid:
+
+  random_seed: [42]
+
+  # λ1: time weight — is there a cost to zeroing it?
+  opti_t: [0.0, 0.5, 1.0, 2.0]
+
+  opti_w_a:     [1.0]
+  opti_w_omega: [1.0]
+
+  opti_w_formation: [1.0]
+
+  # λ_topo: the paper's key topology claim — does disabling it break feasibility?
+  opti_w_topo: [0.0, 0.5, 1.0, 2.0]
+
+  # λ_sfc: hold fixed in Phase 1 (never disable obstacle avoidance by accident)
+  opti_w_sfc: [1.0]
+
+  opti_w_penalty0: [10000.0]
+
+# Phase 2 — run after inspecting Phase 1 results (uncomment and re-run):
+# param_grid:
+#   random_seed: [42]
+#   opti_t: [1.0]
+#   opti_w_a: [1.0]
+#   opti_w_omega: [1.0]
+#   opti_w_formation: [1.0]
+#   opti_w_topo: [1.0]
+#   opti_w_sfc: [0.0, 0.5, 1.0, 2.0]   # now ablate SFC
+#   opti_w_penalty0: [10000.0]
+
+# --- SCALING experiment (separate run, requires recompile for each N) ---
+# After recompiling with the new num_robot value, run sweep.py with this config:
+#
+# param_grid:
+#   random_seed: [42]
+#   opti_t: [1.0]
+#   opti_w_a: [1.0]
+#   opti_w_omega: [1.0]
+#   opti_w_formation: [1.0]
+#   opti_w_topo: [1.0]
+#   opti_w_sfc: [1.0]
+#   opti_w_penalty0: [10000.0]
