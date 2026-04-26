@@ -48,7 +48,9 @@ public:
   int& solve_success,
   double& e_max, double& e_avg,
   double& avg, double& std,
-  double& final_infeasibility);
+  double& final_infeasibility,
+  double initial_guess_noise_stddev = 0.0,
+  unsigned int initial_guess_noise_seed = 0u);
   void GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons);
 
 private:

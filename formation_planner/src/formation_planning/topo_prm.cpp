@@ -20,7 +20,12 @@ namespace formation_planner {
 
 void TopologyPRM::init(ros::NodeHandle& nh) {
   graph_.clear();
-  eng_ = default_random_engine(rd_());
+  int topo_prm_seed = 0;
+  if (nh.getParam("topo_prm_seed", topo_prm_seed)) {
+    eng_ = default_random_engine(static_cast<unsigned int>(topo_prm_seed));
+  } else {
+    eng_ = default_random_engine(rd_());
+  }
   rand_pos_ = uniform_real_distribution<double>(-1, 1);
   rand_pos_x = uniform_real_distribution<double>(-1, 1);
   rand_pos_y = uniform_real_distribution<double>(-1, 1);

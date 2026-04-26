@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(///wsl.localhost/Ubuntu-20.04/home/night/CPDOT2/src/**)",
+      "Read(///wsl.localhost/Ubuntu-20.04/home/night/CPDOT2/src/CPDOT2/formation_planner/**)",
+      "Bash(wsl *)"
+    ]
+  }
+}

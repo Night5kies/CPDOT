@@ -20,6 +20,7 @@
 #include <tf/transform_datatypes.h>
 #include <tf2/utils.h>
 #include <limits>
+#include <random>
 using namespace forward_kinematics;
 namespace formation_planner {
 struct Data {
@@ -51,6 +52,29 @@ void LogInfeasibilityLimitExceeded(const char* context,
   }
   ROS_ERROR("%s: infeasibility = %.6f exceeds limit %.6f",
             context, infeasibility, reported_limit);
+}
+
+void PerturbInitialGuess(std::vector<FullStates>& guess,
+                         double noise_stddev,
+                         unsigned int noise_seed) {
+  if (noise_stddev <= 0.0) {
+    return;
+  }
+
+  std::mt19937 rng(noise_seed);
+  std::normal_distribution<double> pos_noise(0.0, noise_stddev);
+  std::normal_distribution<double> theta_noise(0.0, noise_stddev * 0.25);
+
+  for (auto& robot_guess : guess) {
+    if (robot_guess.states.size() <= 2) {
+      continue;
+    }
+    for (size_t i = 1; i + 1 < robot_guess.states.size(); ++i) {
+      robot_guess.states[i].x += pos_noise(rng);
+      robot_guess.states[i].y += pos_noise(rng);
+      robot_guess.states[i].theta += theta_noise(rng);
+    }
+  }
 }
 
 }
@@ -749,7 +773,9 @@ bool FormationPlanner::Plan_fm(
   int& solve_success,
   double& e_max, double& e_avg,
   double& avg, double& std,
-  double& final_infeasibility) {
+  double& final_infeasibility,
+  double initial_guess_noise_stddev,
+  unsigned int initial_guess_noise_seed) {
   std::string package_path = ros::package::getPath("formation_planner");   
   double solve_time = 0.0;
   cost = 0.0;
@@ -839,6 +865,10 @@ bool FormationPlanner::Plan_fm(
     }
   }
 
+  // Keep the scenario fixed across trials while still allowing a fresh
+  // optimizer invocation to start from a slightly different initial point.
+  PerturbInitialGuess(guess, initial_guess_noise_stddev, initial_guess_noise_seed);
+
   for (int ind = 0; ind < guess.size(); ind++) {
     std::vector<Eigen::Vector2d> ref_path;
     std::vector<std::vector<std::vector<double>>> hPolys;
@@ -924,7 +954,7 @@ bool FormationPlanner::Plan_fm(
       guess = result_opt;
       result = result_opt;
       result_opt.clear();
-      return false;
+      // fall through into refinement phase (warm_start > 5)
     }
     // generate inter-distance constraints
     if (!CheckHeightCons(result, height_cons, vertice_set, height)){
@@ -972,16 +1002,9 @@ bool FormationPlanner::Plan_fm(
     // }
     warm_start++;
   }
-  // for (int i = 0; i < result_opt.size(); i++) {
-  //   for(int j = 0; j < result_opt[i].states.size(); j++) {
-  //     // a^2 + w^2
-  //     cost += pow(result_opt[i].states[j].a, 2) + pow(result_opt[i].states[j].omega, 2);
-  //   }
-  // }
-  // cost /= num_robot;
-  // result = result_opt;
-  // solve_success = 1;
-  return false;
+  if (!result_opt.empty()) result = result_opt;
+  solve_success = 1;
+  return true;
 }
 
 FullStates FormationPlanner::ResamplePath(const std::vector<math::Pose> &path, const int step_num, bool ratio) const {

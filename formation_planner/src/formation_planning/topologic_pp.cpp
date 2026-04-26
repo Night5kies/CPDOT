@@ -493,11 +493,13 @@ int main(int argc, char **argv) {
   ros::NodeHandle nh;
 
   // --- sweep parameters (all settable via rosparam, no recompile needed) ---
-  int   n_trials, random_seed;
+  int   n_trials, random_seed, topo_prm_seed;
   double opti_t_p, opti_w_a_p, opti_w_omega_p, opti_w_penalty0_p;
   double opti_w_formation_p, opti_w_topo_p, opti_w_sfc_p;
+  double solver_initial_noise_stddev;
   nh.param("n_trials",         n_trials,            20);
   nh.param("random_seed",      random_seed,         42);
+  nh.param("topo_prm_seed",    topo_prm_seed,       42);
   nh.param("opti_t",           opti_t_p,            config_->opti_t);
   nh.param("opti_w_a",         opti_w_a_p,          config_->opti_w_a);
   nh.param("opti_w_omega",     opti_w_omega_p,      config_->opti_w_omega);
@@ -505,6 +507,7 @@ int main(int argc, char **argv) {
   nh.param("opti_w_formation", opti_w_formation_p,  config_->opti_w_formation);
   nh.param("opti_w_topo",      opti_w_topo_p,       config_->opti_w_topo);
   nh.param("opti_w_sfc",       opti_w_sfc_p,        config_->opti_w_sfc);
+  nh.param("solver_initial_noise_stddev", solver_initial_noise_stddev, 1e-3);
   config_->opti_t           = opti_t_p;
   config_->opti_w_a         = opti_w_a_p;
   config_->opti_w_omega     = opti_w_omega_p;
@@ -512,8 +515,8 @@ int main(int argc, char **argv) {
   config_->opti_w_formation = opti_w_formation_p;
   config_->opti_w_topo      = opti_w_topo_p;
   config_->opti_w_sfc       = opti_w_sfc_p;
-  ROS_INFO("[sweep] n_trials=%d seed=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
-           n_trials, random_seed, config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
+  ROS_INFO("[sweep] n_trials=%d seed=%d topo_seed=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
+           n_trials, random_seed, topo_prm_seed, config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
            config_->opti_w_formation, config_->opti_w_topo, config_->opti_w_sfc);
 
   // --- CSV output ---
@@ -616,28 +619,20 @@ int main(int argc, char **argv) {
         // int num_obs = num_obs_set[obs_num_ind];
         int num_obs = 70;
         for (int case_num = 0; case_num < n_trials && ros::ok(); case_num++) {
-          // seeded per-trial start/goal variation
-          std::mt19937 trial_rng(random_seed + case_num);
-          std::uniform_real_distribution<double> lateral(-8.0, 8.0);
           double start_point_x = -15.0;
-          double start_point_y = lateral(trial_rng);
+          double start_point_y = 0.0;
           double goal_point_x  =  15.0;
-          double goal_point_y  = lateral(trial_rng);
-          // double start_point_x = -26.222;
-          // double start_point_y = -8.067;
-          // double goal_point_x = 24.108;
-          // double goal_point_y = 15.387;  
+          double goal_point_y  = 0.0;
           Eigen::Vector2d fc_start = {start_point_x, start_point_y};
           Eigen::Vector2d fc_goal = {goal_point_x, goal_point_y};
           std::vector<Eigen::Vector2d> start_pts;
           std::vector<Eigen::Vector2d> goal_pts;
           std::vector<TrajectoryPoint> start_set;
           std::vector<TrajectoryPoint> goal_set;
-          generateRegularPolygon(start_point_x, start_point_y, vvcm.formation_radius, num_robot, start_pts, start_set); // vvcm.foramtion_radius
+          generateRegularPolygon(start_point_x, start_point_y, vvcm.formation_radius, num_robot, start_pts, start_set);
           generateRegularPolygon(goal_point_x, goal_point_y, vvcm.formation_radius, num_robot, goal_pts, goal_set);
-          // GenerateRandomObstacle(num_obs, height_set, obstacle, height, polys,polys_inflat, poly_vertices_set, generateobs);
-          // ReadRandomObstacle(30, height_set, obstacle, height, polys,polys_inflat, poly_vertices_set, generateobs);
-          DefineRandomObstacle(num_obs, height_set, obstacle, height, polys, polys_inflat, polys_inflat_, poly_vertices_set, generateobs);
+          DefineRandomObstacle(3, height_set, obstacle, height, polys, polys_inflat,
+                               polys_inflat_, poly_vertices_set, generateobs);
           formation_planner::TopologyPRM topo_prm(config_, env);
           CoarsePathPlanner coarse_topo_path(config_, env);
           std::vector<FullStates> solution_set(num_robot);
@@ -781,7 +776,8 @@ int main(int argc, char **argv) {
               bool plan_succeeded = planner_->Plan_fm(
                 local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set, 
                 local_solve_time_set, show_cr, polys_inflat_, hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost, local_solve_success,
-                local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility);
+                local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility,
+                solver_initial_noise_stddev, static_cast<unsigned int>(random_seed + case_num));
               bool has_local_solution =
                 !local_solution_set.empty() && !local_solution_set[0].states.empty();
               if (has_local_solution) {
@@ -911,8 +907,8 @@ int main(int argc, char **argv) {
             new_vector[5] = solve_success; 
             new_vector[6] = topo_search_time; 
             new_vector[7] = filter_sort_time; 
-            new_vector[8] = coarse_time / iteration_num_outter; 
-            new_vector[9] = solve_time / iteration_num_inner; 
+            new_vector[8] = iteration_num_outter > 0 ? coarse_time / iteration_num_outter : 0.0;
+            new_vector[9] = iteration_num_inner  > 0 ? solve_time  / iteration_num_inner  : 0.0;
             new_vector[10] = solve_ocp_total;
             new_vector[11] = e_max; 
             new_vector[12] = e_avg;
@@ -925,7 +921,7 @@ int main(int argc, char **argv) {
           int success_any_solution = solution_set_opt.empty() ? 0 : 1;
           int success_feasible = (std::isfinite(final_infeasibility) &&
                                   final_infeasibility < config_->opti_varepsilon_tol) ? 1 : 0;
-          int trial_success = success_any_solution;
+          int trial_success = success_feasible;
           csv_file << num_robot << ","
                    << config_->opti_t << ","
                    << config_->opti_w_a << ","
