@@ -3,17 +3,17 @@
 # (-5, 3), (-5, -3), and (6, 0). Variation across trials comes from
 # fresh solver invocations on the same scenario.
 
-n_trials_per_config: 10
+n_trials_per_config: 30
 timeout_per_trial_s: 180
 
 pkg_result_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result"
 output_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result/sweep_outputs"
-topo_prm_seed: 42
+topo_prm_seed: 277
 offset_random_seed_per_config: true
 seed_stride_per_config: 1000
 
 held_constant:
-  random_seed: 42
+  random_seed: 277
   opti_t: 1.0
   opti_w_a: 1.0
   opti_w_omega: 1.0
@@ -23,6 +23,6 @@ held_constant:
   opti_w_sfc: 1.0
 
 ablation_one_at_a_time:
-  - opti_w_topo: [0.0, 0.5, 1.0, 1.5, 2.0]
+  - opti_w_topo: [1.0, 0.0, 0.5, 1.5, 2.0]
   - opti_w_sfc: [0.0, 0.5, 1.5, 2.0]
   - opti_w_formation: [0.0, 0.5, 1.5, 2.0]
