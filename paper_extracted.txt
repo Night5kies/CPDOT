@@ -1,0 +1,528 @@
+                                                                                                                                                      2025 IEEE International Conference on Robotics and Automation (ICRA)
+                                                                                                                                                      May 19-23, 2025. Atlanta, USA
+
+                                                                                                                                                      Multi-Nonholonomic Robot Object Transportation with
+                                                                                                                                                             Obstacle Crossing Using a Deformable Sheet
+
+                                                                                                                                                                          Weijian Zhang, Charlie Street, Masoumeh Mansouri
+
+2025 IEEE International Conference on Robotics and Automation (ICRA) | 979-8-3315-4139-2/25/$31.00 ©2025 IEEE | DOI: 10.1109/ICRA55743.2025.11128313     Abstract-- In this paper, we address multi-robot formation            Fig. 1. Four car-like robots collaboratively transporting an object with a
+                                                                                                                                                      planning where nonholonomic robots collaboratively transport             deformable sheet in an unstructured environment. The irregular obstacles
+                                                                                                                                                      objects using a deformable sheet in unstructured, cluttered              randomly distributed in the environment vary in height. The image in the
+                                                                                                                                                      environments. The formation can expand or contract to adjust             top left demonstrates our transportation setup on three Turtlebots.
+                                                                                                                                                      the height of the object on the sheet. However, interactions
+                                                                                                                                                      between the robots and sheet introduce complex constraints for           consider nonholonomic robots for their enhanced robustness
+                                                                                                                                                      formation planning. Complexity increases further when the only           during transportation and widespread applicability in indus-
+                                                                                                                                                      feasible solution requires crossing an obstacle, i.e. where robots       trial settings.
+                                                                                                                                                      navigate in different homotopy classes around an obstacle such
+                                                                                                                                                      that the object hovers above it. Most existing nonholonomic                 In this paper, we address collaborative object transporta-
+                                                                                                                                                      formation planners do not admit obstacle crossing, limiting              tion for nonholonomic robot formations in cluttered envi-
+                                                                                                                                                      performance. In this paper, we present a two-stage iterative             ronments using a deformable sheet (see Fig. 1). For this,
+                                                                                                                                                      trajectory optimization framework which explicitly considers             we introduce a two-stage iterative trajectory optimization
+                                                                                                                                                      obstacle crossing. First, we capture the set of all feasible             framework. First, we identify a set of paths for each robot
+                                                                                                                                                      homotopy classes for each robot using a topological probabilistic        that are homotopically distinct using a topological proba-
+                                                                                                                                                      roadmap. We then iteratively apply numerical optimization                bilistic roadmap (see Sec. IV). Each homotopically distinct
+                                                                                                                                                      techniques to find a safe and feasible solution for the formation.       path makes different routing decisions around each of the
+                                                                                                                                                      We demonstrate the efficacy of our framework in simulation               obstacles in the environment. These paths are then used as
+                                                                                                                                                      and on real robot hardware.                                              an initial guess for the collaborative trajectory optimization
+                                                                                                                                                                                                                               problem, which is formulated as a joint optimal control
+                                                                                                                                                                               I. INTRODUCTION                                 problem (OCP). To simplify trajectory optimization, we
+                                                                                                                                                                                                                               capture object height constraints implicitly in the constraints
+                                                                                                                                                         Recently, significant research has considered collabora-              of the formation. With this, we then iteratively synthesize
+                                                                                                                                                      tive object transportation using formations of mobile robots             a safe and feasible locally optimal trajectory for a given
+                                                                                                                                                      manipulating objects by pushing, grasping, or caging [1].                homotopy class (see Sec. V).
+                                                                                                                                                      Outside of robotics, deformable sheets have been used to
+                                                                                                                                                      carry objects such as hospital patients or fragile objects [2].             Though previous work has considered multi-robot object
+                                                                                                                                                      Deformable sheets can be applied to multi-robot object trans-            transportation using a deformable sheet [3]­[10], ours is
+                                                                                                                                                      portation, where robots hold up the corners of the sheet and             the first to allow nonholonomic robots to cross obstacles in
+                                                                                                                                                      the object lies in the middle. This improves formation flexi-            dense, unstructured environments. The primary contributions
+                                                                                                                                                      bility, as robots can adjust the sheet height by moving further          of this paper are i) a heuristic path exploration method
+                                                                                                                                                      apart to avoid obstacles [3]. However, it is challenging to              which efficiently evaluates a set of homotopically distinct
+                                                                                                                                                      synthesize feasible and efficient formation trajectories using           solution spaces for the formation; and ii) a two-stage iterative
+                                                                                                                                                      these sheets, as we must consider how the robots and sheet               motion planning framework for finding locally time-optimal
+                                                                                                                                                      interact, and how to maintain the formation while avoiding               collision-free formation trajectories using a deformable sheet.
+                                                                                                                                                      collisions with obstacles. Complexity increases further when             We demonstrate the efficacy of our proposed framework in
+                                                                                                                                                      the only feasible solution requires robots to navigate through           simulation and on hardware. All corresponding software is
+                                                                                                                                                      multiple distinct homotopy classes. For example, robots in               released open source online1.
+                                                                                                                                                      the same formation may be positioned on opposite sides of an
+                                                                                                                                                      obstacle while collectively transporting an object on a sheet               1https://github.com/HyPAIR/CPDOT
+                                                                                                                                                      above the obstacle (see Figure 1). For object transportation,
+                                                                                                                                                      such obstacle crossing behaviors should be handled while
+                                                                                                                                                      maintaining the formation. In this paper, we use nonholo-
+                                                                                                                                                      nomic robots to perform these challenging behaviours. We
+
+                                                                                                                                                         Weijian Zhang, Charlie Street and Masoumeh Mansouri are with
+                                                                                                                                                      the School of Computer Science at the University of Birming-
+                                                                                                                                                      ham, wxz163@student.bham.ac.uk and {c.l.street,
+                                                                                                                                                      m.mansouri}@bham.ac.uk
+                                                                                                                                                      Charlie Street and Masoumeh Mansouri are UK participants in Horizon Eu-
+                                                                                                                                                      rope Project CONVINCE, and supported by UKRI grant number 10042096.
+                                                                                                                                                      For the purpose of open access, the authors have applied a Creative
+                                                                                                                                                      Commons Attribution (CC BY) license to any Accepted Manuscript version
+                                                                                                                                                      arising.
+
+                                                                                                                                                      979-8-3315-4139-2/25/$31.00 ©2025 IEEE  7349
+
+                                                                                                                                                      Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+                        II. RELATED WORK                          (a)  (b)
+
+Deformable Object Modelling. Deformable sheets have               Fig. 2. A formation of four car-like robots supports an object (green) with
+high degrees of freedom, making it difficult to predict the       a deformable sheet (blue). (a) The 2D coordinate system of the undeformed
+motion of objects lying in the sheet. Deformable sheets           sheet (top view). (b) The 3D coordinate system of the robot formation based
+are often modelled for robotic manipulation using physics-        on the virtual variable cables model [3].
+and geometry-based models [11]. Physics-based models use
+physics simulators to calculate object motion relative to the     holonomic robots. Also, unlike [9], [10], we allow formations
+sheet. However, these models are often highly complex and         to navigate through obstacles, improving the transportation
+challenging to construct accurately, making them unsuitable       success rate in dense and unstructured environments.
+for real-time applications. Geometry-based models approx-
+imate the sheet through a set of geometric constraints to                            III. PROBLEM STATEMENT
+provide efficient estimates of object deformation [12].
+                                                                     In this paper, we consider a formation of N car-like
+Formation-Level Obstacle Avoidance. In [7], [9], formation        nonholonomic robots that transport an object using a de-
+motion planning is simplified using the geometric constraints     formable sheet. Let W  SE(3) be the 3D workspace, and
+of the sheet, reducing the complexity of the interaction          O  SE(3) be the set of static convex polyhedral obstacles
+model. In [10], a centralized planning and control algorithm      which are known a priori. During object transportation, the
+is presented which efficiently guides a formation of car-         robots move in 2D space, whereas the transported object
+like robots while transporting a net carrying an object in        moves in 3D. To simplify the object transportation problem,
+unstructured environments. However, [7], [9], [10] treat the      we apply the assumptions in [3], i.e. the object is a point
+formation as a solid two-dimensional object which must            mass, the object's motion is quasi-static, and the deformable
+remain strictly separated from obstacles to avoid collisions.     sheet is inelastic, such that the object moves freely under
+This collision avoidance strategy can easily fail in environ-     gravity towards the position of minimum potential energy
+ments with dense obstacles [8].                                   on the sheet. For robot i  {1, ..., N }, we define pi(t) =
+                                                                  (xi(t), yi(t))T  SE(2) as the coordinate of the midpoint
+   Formations can flexibly avoid obstacles by passing through     of the rear axle and i(t)  [-, ) as the robot's orientation
+them, i.e. allowing robots to travel either side of an obstacle   in Cartesian space. po = [xo, yo, zo]T  SE(3) denotes
+assuming the object is high enough. In [4]­[6], a formation       the coordinate of the object. A 2D view of a four-robot
+of three omnidirectional mobile robots grip and support a         formation is shown in Fig. 2(a), where the support points
+deformable sheet to manipulate and transport objects along a      of the sheet vi form a convex polygon with N vertices.
+given trajectory. However, as the number of robots increases,     We capture the formation topology by labelling the robots
+the transported object may have different equilibrium states      sequentially as {1, 2, 3, 4} in an anticlockwise direction.
+on the sheet, i.e. different parts of the sheet can be taut or    The topological order must remain unchanged during trans-
+slack. This makes it challenging to identify the location of the  portation or the sheet will fold or twist. We define N (i) as
+object. A virtual variable cable model (VVCM) is presented        the robot number adjacent to robot i, i.e. N (i) = i + 1 if
+in [3] which simplifies object-sheet interactions into a set of   i < N , and N (i) = 1 otherwise. A 3D view of the same
+dynamically changing cables. With this, the equilibrium of        formation is shown in Fig. 2(b), where each robot's support
+the object on the sheet is represented using the tension state    point ri is fixed at a constant height zr, i.e., ri = [pi, zr]T .
+of the virtual cables in a quasi-static condition. This allows    In this paper, we use a bicycle model [15] to describe the
+the object's position under different formation configurations    kinematics of the robots and assume the robots steer with
+to be estimated quickly. The authors then present a local         perfect rolling and no slipping. We denote a trajectory for
+planner which allows the formation to navigate through            robot i as Ti(t) = [zi(t), ui(t)]T , t  [0, tf ], where zi(t)
+obstacles, however it relies heavily on the robots being          and ui(t) represent the state and control parameters, and tf
+holonomic. In [8], a formation-level path planning algorithm      represents the time robot i should reach its target while fully
+is introduced to navigate through dense environments,             tracking Ti.
+however its success rate is highly dependent on how finely
+the environment is discretized. Further, all virtual cables          Under the above assumptions, to solve the object trans-
+must remain taut during transportation which reduces the          portation problem we must obtain trajectories Ti for each
+flexibility of the formation. In [13], [14], cable-driven paral-  robot which transport the object from its initial configuration
+lel robots (CDPRs) use physical cables to transport objects.      zsi to its target configuration zgi while avoiding robot and
+A reinforcement learning approach for CDPR dynamic                object collisions. We formulate this as a joint OCP (Prob-
+obstacle avoidance is presented in [13], however learning         lem (1)) as below:
+is complex and does not transfer to different environments.
+In [14], an optimization-based trajectory planner for CDPRs
+is presented. This approach requires the coordinates and
+timesteps of the object's passage through obstacles prior to
+planning, reducing its applicability and flexibility.
+
+   In contrast to [3]­[8], our framework is applicable to non-
+
+                                                                                   7350
+Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+     N                tf
+
+min                       ui(t)T Wui(t) dt + ttf  (1a)
+zi, ui, tf
+              i=1  0
+
+s.t. kinematic constraints,                       (1b)
+
+     z  zi(t)  z, u  ui(t)  u,                    (1c)              Fig. 3. The outcome of running [16] in a simple environment with three
+                                                                    obstacles. The set of homotopically distinct paths are shown in blue and the
+     zi(0) = zis, ui(0) = uis,                    (1d)              rewired shortest paths for robot 1 are shown in red.
+
+     zi(tf ) = zgi , ui(tf ) = uig,               (1e)
+
+     tf > 0,                                      (1f)              collision occurs or the robot's initial and target configurations
+                                                                    meet. The final robot path combines a segment of the
+     G(zi(t), ui(t), t)  0,                       (1g)              homotopically distinct path (the solid red lines in Fig. 3) and
+                                                                    the routes to and from it. By selecting a path for each robot
+     t  [0, tf ], i  {1, 2, . . . , N },                            we build a guiding path for the entire formation (line 2).
+
+where W  R2×2 is a diagonal matrix which penalizes                  B. Heuristics Filtering and Sorting
+control effort, and ttf is a time regularization term which
+minimizes the trajectory execution time. The OCP constraints           An initial guess for the OCP in (1) can be computed by
+capture the robots' kinematic constraints (1b), solution fea-       selecting one of the paths in Sec. IV-A for each robot. This
+sibility constraints (1c), initial boundary constraint (1d),        generates a set of combinations of paths combj. It becomes
+terminal boundary constraint (1e), and positivity constraints       intractable to solve (1) for each combj, as the number of
+on the terminal time (1f). (1g) comprises the robots' safety        homotopy classes increases exponentially with the number of
+constraints, which we describe in Sec. V.                           obstacles. Therefore, we introduce a number of heuristics to
+                                                                    filter and sort these combinations (see line 3 of Alg. 1). Given
+   To solve (1), we propose Alg. 1. The remainder of the            a path for each robot, we begin by uniformly discretizing the
+paper describes each step of Alg. 1 in detail. In summary, we       paths into K waypoints. We then record any obstacles which
+begin by identifying a set of homotopically distinct paths for      intersect the line segments between corresponding waypoints
+each robot which make different decisions to avoid obstacles.       on any two paths. If the height of the obstacle is higher
+We build combinations of these paths, one for each robot, and       than the maximum height of the object in the deformable
+then filter and rank them to form a rich set of initial guesses     sheet, that combination of paths is discarded. We also record
+(line 1-3) to guide the solution of the joint OCP in (1). We        the Euclidean distance between corresponding waypoints. If
+then iteratively test each combination of paths in order and        the inter-distance exceeds a threshold d, the formation is
+solve an independent OCP until a feasible solution is found         unlikely to be maintained, and thus the combination is dis-
+(lines 4-23). To simplify the OCP while ensuring object             carded. Finally, to prevent the sheet from folding or twisting,
+collision avoidance, we convert the object height constraint        we require the robots assigned to the same homotopy class
+into a set of constraints over the formation. These constraints     to be adjacent [17], i.e. their labels are consecutive. After
+are iteratively adjusted until the object is collision-free (lines  completing this initial filtering, we introduce a heuristic cost
+13-20). We proceed by discussing the initial guess generation       function to sort the remaining combinations:
+in Sec. IV, and the OCP safety constraints in Sec. V.
+
+               IV. INITIAL GUESS GENERATION                         J = 1 · Jl + 2 · Jt + 3 · Jh + 4 · Js.                                      (2)
+
+   In this section, we present our approach for generating          Here, Jl and Jt represent the average path length and the
+initial guesses for formation trajectory optimization.              average number of waypoints for all robots, respectively. Jh
+                                                                    is 1 if all selected paths are in the same homotopy class and
+A. Generating Homotopically Distinct Paths                          0 otherwise. Js counts the number of topological violations
+                                                                    using the method proposed in [10], and then estimates the
+   The solution quality for the OCP in (1) is reliant on having     feasibility of homotopy assignments. 1, 2, 3 and 4 are
+a high-quality initial guess. The initial guess should approx-      weight parameters. The first two terms encourage shorter
+imate the homotopy class of the optimal joint trajectory.           paths and fewer detours. The third term prioritizes crossing
+Therefore, the first step in generating our initial guess is to     obstacles over avoiding them to avoid robot congestion
+account for all homotopically distinct paths through the envi-      and exploit the full solution space. The fourth term tries to
+ronment. To achieve this, we build a topological probabilistic      maintain the consistency of the formation's topology.
+roadmap (PRM) [16] (see line 1 in Alg. 1) using the centres
+of the initial and target formation configurations. An example      C. Joint Trajectory Generation
+PRM is shown in Fig. 3. Multiple homotopically distinct
+shortest paths from the initial to target formation configura-         Given a combination of paths combj, we now generate
+tions are then extracted from the PRM using path-searching          a corresponding joint trajectory which can act as an initial
+techniques (see the blue lines in Fig. 3). We then rewire           guess for the OCP in (1) (line 5). For this, we construct
+these paths for each of the robots using a reverse search           a safe corridor for each robot that ensures the initial guess
+to connect the robot's initial and target configurations to the     remains in the same homotopy class as the paths in combj.
+path (the dashed red lines in Fig. 3). The search is halted if a
+
+                                                                                   7351
+Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+Algorithm 1: The Proposed Formation Planner.                                 Algorithm 2: Function SatisfiedHeightCons(T ).
+
+1 path  TopoPRM(map, psctr, pcgtr);                                          1 foreach t  [0, tf ] do
+2 comb  IdentifyComb(path, {psi }Ni=1, {pgi }iN=1);                          2 {ri}Ni=1  DeriveRobotPosition(T (t));
+3 comb  Filtering&Sorting(comb);                                             3 Po  FK({ri}iN=1, {vi}Ni=1, zr);
+4 foreach combj  comb do
+5 [T guess, SCj]  GenerateInitialGuess(combj);                               4 Ocross  DetectObstacle(xo, yo);
+                                                                             5 h~  min(zo);
+6 foreach t  [0, tf ] do
+                                                                             6 foreach obstacle  Ocross do
+
+7           // Set min inter-robot distance                                  7  if DeriveHeight(obstacle)  h~ + h then
+
+8           CH (t)  d0;                                                      8  return false;
+
+9 GenerateOCP(T guess, SCj, CH );                                            9 return true;
+
+10 [T , is f ailed]  Solve (1);
+
+11 if is f ailed then
+
+12          continue the outer loop in line 4;                               ing obstacle collision avoidance constraints. Recall that a
+                                                                             robot's centroid and orientation are defined as in Fig. 2(a).
+13 while !SatisfiedHeightCons(T ) do                                         At time t, the footprint of robot i can be described by the
+                                                                             vertices {Vi,l(t)  R2 : Vi,l(t) = pi(t) + R(i(t)) ·
+14          foreach t  [0, tf ] do                                           li,l, l  {1, ..., 4}}, where R(i(t)) is the rotation matrix
+                                                                             representing the orientation of the body frame relative to the
+15          if HeightViolation(T (t)) then                                   world frame, and li,l is the relative coordinate of the l-th
+                                                                             vertex within the body frame. Given the initial trajectories
+16             if MaximumFormation(CH ) then                                 computed in Sec. IV, we run IRIS [18] once more to
+                                                                             generate a safe corridor for each robot. To avoid collisions
+17                   continue the outer loop in line 4;                      with obstacles and maintain topological equivalence with the
+                                                                             initial guess trajectory, robot i's footprint must remain inside
+18             foreach i  [1, ..., N ] do                                    the safe corridor at each timestep:
+
+19                   CiH (t)  max{limax, CiH (t) + };
+
+20          [T , is f ailed]  Solve (1);
+
+21          if is f ailed then
+
+22          continue the outer loop in line 4;
+
+23 return T ;
+
+Safe corridors are computed by using the waypoints in each                      Ai(t) · Vi,l(t)  bi(t),
+                                                                                                                                           (4)
+robot's path as a seed to compute the corresponding obstacle-
+                                                                                i  {1, ..., N }, l  {1, ..., 4}, t  [0, tf ].
+
+free convex polygon using a convex decomposition technique
+
+called IRIS [18]. Formally, the safe corridor for robot i                    Inter-Robot Collision Avoidance Constraints. To avoid
+                                                                             collisions, robot footprints should never intersect. In our
+using  the  path in  combj      can be         represented as  S  C  i  =    framework, we apply the collision avoidance constraints as
+                                                                     j       represented in [15], which check that each vertex of a robot's
+{q  R2 : Aji q  bji }, where Aij  Rnji ×2 and bji  Rnji                      footprint lies outside the footprints of the other robots.
+describe the hyperplane of a convex polygon [18]. nji is the
+                                                                             Size Safety Constraint and Topological Safety Constraint.
+number of hyperplanes, equivalent to the number of edges in                  During transportation, the robot formation must cooperate to
+                                                                             support a deformable sheet. The sheet is of finite length and
+the convex region. Using the safe corridors, we then adapt                   the distance between any two robots must not exceed this
+hybrid A [19] to find a homotopically consistent, collision-                 length. Therefore, we constrain the distance between each
+                                                                             robot and its neighbours as follows:
+free, and dynamically feasible path for each robot. When
+expanding a child node in hybrid A, it must be constrained
+
+to the safe corridor to ensure it is collision-free, and remain
+
+homotopically consistent with the selected initial guess, i.e.:
+
+                         K
+
+            pi(t)               S  C  i  ,  t    [0,  tf ].             (3)          pi(t) - pN(i)(t)2 - limax  0, t  [0, tf ], (5)
+                                      j
+                                                                             where limax is the maximum allowable distance between
+                         j=1                                                 robot i and N (i) (see Fig. 2(a)). As discussed in Sec. III, the
+                                                                             topological ordering of the robots should remain fixed during
+These paths are then augmented with a minimum-time veloc-                    locomotion to prevent the sheet becoming twisted. For this,
+ity profile to form trajectories [20]. Finally, we proportionally            we apply the topological safety constraints in [10], which
+relax the velocities of all robots [21] to ensure that they reach            ensure that the signed distance from the robot to the lines
+their respective target positions simultaneously. The resulting              representing the non-neighboring net edges are non-negative.
+trajectories are recorded in T guess.                                        Formally, given matrix B = [0 - 1, 1 0]:
+
+         V. ITERATIVE TRAJECTORY OPTIMIZATION                                                B(pN(j) - pj )T
+                                                                                              pN(j) - pj 2
+   In this section, we describe the safety constraints in
+OCP (1) and how they are incorporated during optimization.
+
+A. Safety Constraints                                                                                         (pi  -  pj )    0,
+
+                                                                                j  {1, 2, . . . , N } : j = i, N (j) = i,                              (6)
+
+Environmental Obstacle Avoidance Constraints. In our                                           i  {1, 2, . . . , N }.
+framework, we consider the shape of the robots when defin-
+
+                                                                                          7352
+       Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+Object Height Constraint. The object's trajectory is highly          3.2GHz and 16GB of RAM. All software is implemented
+coupled to robot movement. In the 3D coordinate system in            in C++ using the robot operating system (ROS) [23]. To
+Fig. 2(b), the connection between each robot and the object          solve the OCP in (1), we use the explicit Runge-Kutta
+can be taut or slack [22]. With this, there are multiple equi-       method [24] to construct the nonlinear programming (NLP)
+librium states for the object with different numbers of taut         problem, ADOL-C [25] for automatic differentiation,
+cables. We compute the different equilibrium states of the           and the primal-dual interior-point solver IPOPT [26] to
+object by applying the forward kinematics function in [22]:          solve the NLP. Experimental runs can be viewed in the
+                                                                     supplementary video2. All parameter settings are described
+fF K ({pi}iN=1, {vi}Ni=1, zr)  Po  SE(3). (7)                        in the documentation for our open-source software release.
+
+   Given the footprints for each robot and the fixed height of       A. Simulation Experiment
+
+the robot contact points with the sheet, we obtain the set of           1) Ablation Study: We conducted an ablation study to
+equilibrium states Po under all possible combinations of taut        demonstrate the benefits of the initial guesses in Sec. IV.
+cables. This results in a set of corresponding object height         We compared our framework in Alg. 1 to a modified version,
+values zo, and x and y coordinates xo and yo, respectively.          where hybrid A computes the initial guess in (1) without
+Let Ocross be the set of obstacles which intersect with the          identifying multiple homotopy classes. All experiments take
+object in the 2D plane. To avoid collisions with the object, all     place in a maze environment with cuboid obstacles of heights
+obstacles must be lower than h~+h, where h~ = min(zo), and           ranging from 0.4-0.8m, as shown in Fig. 4. We generated
+h is a safety margin. This process is summarized in Alg. 2.          100 problem instances with randomised initial and goal
+                                                                     configurations which are consistent across both methods. We
+Terminal Constraints. It is challenging for car-like robots          then evaluate the success rate (SR), object height (height),
+                                                                     task completion time (tf ), and control efforts (ce) for both
+to precisely reach a target position. Therefore, to improve          methods, as shown in Table I. We also present the aver-
+                                                                     age/maximum formation similarity error e¯f and em f ax used
+smoothness at the end of the formation trajectory, we relax          in [27], which describes how much the formation adjusts its
+the terminal constraints in (1e) to po(tf ) - potarget  t,           shape. The version of our framework without an initial guess
+where potarget is the target position of the object and t            can only identify a single homotopy class, which requires
+is a distance threshold. The terminal state of the object is         significant deformation of the formation to maneuver through
+                                                                     the congested passage in Fig. 4(a). This results in greater
+approximated as the average of the robot terminal positions,         variation in the object height during transportation, and in
+                                                                     43 instances, the poor initial guess resulted in an infeasible
+i.e. po(tf ) =  N    pi(tf  ).  This  assumes  the  object  remains  solution. In contrast, our method benefits from a more
+                i=1                                                  comprehensive exploration of the solution space, achieving
+                                                                     a 100% success rate while also improving trajectory quality
+near the geometric center of the sheet, which holds under            and transportation stability (see Fig. 4(b)).
+
+quasi-static object motion and an inelastic sheet.                      2) Comprehensive Analysis: We do not compare against
+                                                                     state-of-the-art methods as the algorithms proposed in [3]­
+B. Iterative Process                                                 [8] only apply to omnidirectional robots, and the approaches
+                                                                     in [9], [10] lack the capability to navigate through obstacles.
+   The initial guesses computed in Sec. 2 may be imperfect           To evaluate the robustness of our framework, we consider
+as they lack information about the kinematic constraints of          object transportation in a more complex 60m × 60m envi-
+the robots. Further, the complex height safety constraints in        ronment. We considered formations of three and four robots,
+Alg. 2 make (1) challenging to solve directly. To mitigate           where each robot's footprint is a 1m × 0.8m rectangle. The
+these issues, we propose a two-layer iterative framework,            initial and target positions of the formation center are set
+as illustrated in Alg. 1. In the inner loop (lines 13 to 20          to (-35, -35)m and (35, 35)m, respectively. We consider
+of Alg. 1), we iteratively add formation constraints at any          problems with 20, 40, 60, 80, and 100 cuboid obstacles. For
+timestep where the height constraint is violated:                    each number of obstacles, we randomly generate 100 prob-
+                                                                     lem instances, where obstacles have dimensions 1.5 × 0.75m
+       pi(t) - pN(i)(t)2 - CiH (t)  0, t  [0, tf ], (8)              or 2 × 1m, and the obstacle height is uniformly sampled in
+                                                                     the range 0.4-0.8m. For each instance, we record a failure
+where CiH (t) is the minimum allowable distance between              if a solution is not found within 60 seconds. We record the
+adjacent robots at time t. Whenever an object height violation       success rate (SR), the planning time (the combined time for
+is detected, CiH (t) is iteratively increased by , starting          initial guess generation and trajectory optimization), and the
+from an initial default distance d0 (line 19). This raises the       average iterations for the outer and inner loops of Alg. 1.
+sheet and consequently the object. If the maximum distance           We present the results in Table II.
+between robots is reached (line 16) or any other constraints
+are violated (lines 11 and 21), our planner fails and starts            2https://youtu.be/DvEniLKDaH0
+again from the next initial guess. This process is repeated
+until a feasible solution is found. Note that the loop in lines
+4-23 can be executed in parallel to improve solution time as
+each combination of paths is independent.
+
+                 VI. EXPERIMENTAL RESULTS
+
+   In this section, we demonstrate the efficacy of our
+approach in simulation and on hardware. All simulations
+are run on Ubuntu 20.04 with an Intel Core i9 processor @
+
+                                                                                   7353
+Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+            (a)                                                               (b)
+
+Fig. 4. The generated trajectories for the ablation study. (a) Without heuristic initial guess generation. (b) With heuristic initial guess generation.
+
+                                                      TABLE I
+
+                     FRAMEWORK PERFORMANCE WITH AND WITHOUT HEURISTIC INITIAL GUESS GENERATION.
+
+  Method             SR                e¯f            efmax                      height (m)            tf (s)                  ce
+w\o Sec. IV          57%      0.1647 ± 0.0628  0.2992 ± 0.1271                0.5168 ± 0.4315  84.6118 ± 13.0238      0.5468 ± 0.3148
+
+ w Sec. IV           100% 0.0644 ± 0.0135 0.1981 ± 0.0645 0.5913 ± 0.1385 78.1998 ± 14.2406 0.2411 ± 0.1374
+
+                                                                            TABLE II
+                          FRAMEWORK PERFORMANCE AS THE NUMBER OF ROBOTS AND OBSTACLES INCREASE.
+
+Obstacles                 Planning Time (s)    Avg. Iterations Obstacles                       Planning Time (s)       Avg. Iterations
+                 SR                                                                    SR
+
+(3 robots)                IG  TO               O (I)                          (4 robots)       IG                 TO   O (I)
+
+20          99% 4.25 ± 2.41 4.39 ± 5.54 1.04 (1.14)                           20          97% 4.19 ± 2.58 7.81 ± 10.57 1.08 (1.08)
+
+40          94% 5.72 ± 2.98 7.43 ± 6.94        1.49 (1.51)                    40          86% 4.55 ± 2.29 8.15 ± 8.76  1.12 (1.05)
+
+60          89% 7.27 ± 2.09 12.27 ± 12.58 1.49 (1.51)                         60          82% 5.56 ± 1.56 15.10 ± 16.06 1.33 (1.11)
+
+80          79% 8.26 ± 2.73 12.59 ± 11.15 1.41 (1.65)                         80          66% 6.86 ± 1.97 16.16 ± 11.68 1.33 (1.09)
+
+100         71% 9.74 ± 2.25 16.46 ± 13.65 1.55 (1.93)                         100         57% 9.76 ± 2.71 18.22 ± 17.79 1.37 (1.37)
+
+Fig. 5. Example trajectories (orange) for a formation of 4 car-like robots.   Fig. 6. Three snapshots of three Turtlebots transporting an object with
+The transported object is a blue sphere, and the pink and red areas indicate  trajectories overlaid, where the formation expands to cross an obstacle.
+obstacles. Yellow and green areas show the initial and target formation
+configurations, respectively. White virtual cables are shown instead of a     not car-like robots. We demonstrated the performance of our
+sheet as they are simpler to visualize in Gazebo.                             framework on car-like robots in Sec. VI-A. Robot states are
+                                                                              obtained through ROS, and a closed loop controller adapted
+   As the number of obstacles and robots increase, the                        from [28] tracks robot trajectories at 100Hz. We consider
+success rate decreases. This is because the increased envi-                   three problem instances with different obstacle heights but
+ronment complexity reduces the feasible solution space, in-                   the same start and end points. Fig. 6 illustrates robot trajec-
+creasing the difficulty of planning. Similarly, Alg. 1 requires               tories for one problem instance, with snapshots taken at three
+more outer iterations to explore different topologies, and                    points along the trajectory. Here, the formation begins in its
+more inner iterations to impose the object height constraints.                default shape, expands to cross an obstacle, and then con-
+However, the total number of iterations remains low due to                    tracts back to the smaller shape once the obstacle is cleared.
+the quality of initial guesses generated in Sec. IV. In all
+successful instances, our planner generates safe and feasible                                          VII. CONCLUSION
+collision-free trajectories. Fig. 5 shows example trajectories
+in Gazebo for four car-like robots in a scenario with 100                        In this paper, we proposed a motion planning frame-
+obstacles. The object's position is estimated by selecting                    work for collaborative object transportation using a team of
+the lowest height equilibrium state obtained through forward                  nonholonomic robots and a deformable sheet. Our iterative
+kinematics [22]. Our framework adjusts the formation to                       two-stage framework synthesizes high quality trajectories
+adapt to the obstacles while ensuring safety.                                 while ensuring completeness. We improve the efficiency
+                                                                              of our solver by decoupling object height constraints from
+B. Real-World Experiment                                                      the optimization problem. The efficacy of our framework
+                                                                              has been validated in simulation and in the real world. In
+   We also evaluated our framework in a real indoor scenario                  future work, we will improve our framework to account for
+with cuboid obstacles, as shown in Fig. 6. Due to robot                       dynamic obstacles such as humans.
+availability we used three Turtlebots (see Fig. 1), which are
+
+                                                                                   7354
+Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+                            REFERENCES                                           [21] Y. Chen, M. Cutler, and J. P. How, "Decoupled multiagent path
+                                                                                       planning via incremental sequential convex programming," in 2015
+ [1] E. Tuci, M. H. Alkilabi, and O. Akanyeti, "Cooperative object trans-              IEEE International Conference on Robotics and Automation (ICRA),
+      port in multi-robot systems: A review of the state-of-the-art," Frontiers        pp. 5954­5961, IEEE, 2015.
+      in Robotics and AI, vol. 5, p. 59, 2018.
+                                                                                 [22] J. Hu, W. Liu, J. Yi, and Z. Xiong, "Forward kinematics of object
+ [2] B. Roy, A. Basmajian, and H. H. Asada, "Repositioning of a rigid body             transporting by a multi-robot system with a deformable sheet," IEEE
+      with a flexible sheet and its application to an automated rehabilitation         Robotics and Automation Letters, 2024.
+      bed," IEEE Transactions on automation science and engineering,
+      vol. 2, no. 3, pp. 300­307, 2005.                                          [23] M. Quigley, K. Conley, B. Gerkey, J. Faust, T. Foote, J. Leibs,
+                                                                                       R. Wheeler, A. Y. Ng, et al., "Ros: An open-source robot operating
+ [3] J. Hu, W. Liu, H. Zhang, J. Yi, and Z. Xiong, "Multi-robot object                 system," in Proceedings of the ICRA Workshop on Open Source
+      transport motion planning with a deformable sheet," IEEE Robotics                Software, vol. 3, p. 5, 2009.
+      and Automation Letters, vol. 7, no. 4, pp. 9350­9357, 2022.
+                                                                                 [24] P. J. van der Houwen and B. P. Sommeijer, "Explicit runge­kutta (­
+ [4] K. Hunte and J. Yi, "Collaborative object manipulation through                    nystro¨m) methods with reduced phase errors for computing oscillating
+      indirect control of a deformable sheet by a mobile robotic team," in             solutions," SIAM Journal on Numerical Analysis, vol. 24, no. 3,
+      2019 IEEE 15th International Conference on Automation Science and                pp. 595­617, 1987.
+      Engineering (CASE), pp. 1463­1468, IEEE, 2019.
+                                                                                 [25] A. Walther and A. Griewank, "Getting started with adol-c.," Combi-
+ [5] K. Hunte and J. Yi, "Collaborative manipulation of spherical-shape                natorial scientific computing, vol. 1, no. 06.02, 2009.
+      objects with a deformable sheet held by a mobile robotic team," IFAC-
+      PapersOnLine, vol. 54, no. 20, pp. 437­442, 2021.                          [26] A. Wa¨chter and L. T. Biegler, "On the implementation of an interior-
+                                                                                       point filter line-search algorithm for large-scale nonlinear program-
+ [6] K. Hunte and J. Yi, "Pose control of a spherical object held by                   ming," Mathematical programming, vol. 106, pp. 25­57, 2006.
+      deformable sheet with multiple robots," IFAC-PapersOnLine, vol. 55,
+      no. 37, pp. 414­419, 2022.                                                 [27] Q. Liu, B. Tian, X. Zhang, J. Lu, and Z. Li, "Sampling-based
+                                                                                       hierarchical trajectory planning for formation flight," arXiv preprint
+ [7] J. Alonso-Mora, R. Knepper, R. Siegwart, and D. Rus, "Local motion                arXiv:2407.17392, 2024.
+      planning for collaborative multi-robot manipulation of deformable
+      objects," in 2015 IEEE international conference on robotics and            [28] Y. Kanayama, Y. Kimura, F. Miyazaki, and T. Noguchi, "A stable
+      automation (ICRA), pp. 5495­5502, IEEE, 2015.                                    tracking control method for an autonomous mobile robot," in Proceed-
+                                                                                       ings., IEEE International Conference on Robotics and Automation,
+ [8] W. Liu, J. Hu, H. Zhang, M. Y. Wang, and Z. Xiong, "A novel graph-                pp. 384­389, IEEE, 1990.
+      based motion planner of multi-mobile robot systems with formation
+      and obstacle constraints," IEEE Transactions on Robotics, 2023.
+
+ [9] S. Chand, P. Verma, R. Tallamraju, and K. Karlapalem, "Transportation
+      of deformable payload through static and dynamic obstacles using
+      loosely coupled nonholonomic robots," in 2019 International Sympo-
+      sium on Multi-Robot and Multi-Agent Systems (MRS), pp. 228­230,
+      IEEE, 2019.
+
+[10] L. Pei, J. Lin, Z. Han, L. Quan, Y. Cao, C. Xu, and F. Gao, "Collab-
+      orative planning for catching and transporting objects in unstructured
+      environments," IEEE Robotics and Automation Letters, 2023.
+
+[11] F. Nadon, A. J. Valencia, and P. Payeur, "Multi-modal sensing and
+      robotic manipulation of non-rigid objects: A survey," Robotics, vol. 7,
+      no. 4, p. 74, 2018.
+
+[12] M. Ruan, D. McConachie, and D. Berenson, "Accounting for di-
+      rectional rigidity and constraints in control for manipulation of de-
+      formable objects without physical simulation," in 2018 IEEE/RSJ
+      International Conference on Intelligent Robots and Systems (IROS),
+      pp. 512­519, IEEE, 2018.
+
+[13] Y. Liu, Z. Cao, H. Xiong, J. Du, H. Cao, and L. Zhang, "Dynamic
+      obstacle avoidance for cable-driven parallel robots with mobile bases
+      via sim-to-real reinforcement learning," IEEE Robotics and Automa-
+      tion Letters, vol. 8, no. 3, pp. 1683­1690, 2023.
+
+[14] T. Rasheed, P. Long, A. S. Roos, and S. Caro, "Optimization based
+      trajectory planning of mobile cable-driven parallel robots," in 2019
+      IEEE/RSJ International Conference on Intelligent Robots and Systems
+      (IROS), pp. 6788­6793, IEEE, 2019.
+
+[15] W. Zhang, C. Street, and M. Mansouri, "A decoupled solution to
+      heterogeneous multi-formation planning and coordination for object
+      transportation," Robotics and Autonomous Systems, p. 104773, 2024.
+
+[16] B. Zhou, J. Pan, F. Gao, and S. Shen, "Raptor: Robust and perception-
+      aware trajectory replanning for quadrotor fast flight," IEEE Transac-
+      tions on Robotics, vol. 37, no. 6, pp. 1992­2009, 2021.
+
+[17] R. Herguedas, M. Aranda, G. Lo´pez-Nicola´s, C. Sagu¨e´s, and
+      Y. Mezouar, "Double-integrator multirobot control with uncoupled
+      dynamics for transport of deformable objects," IEEE Robotics and
+      Automation Letters, 2023.
+
+[18] R. Deits and R. Tedrake, "Computing large convex regions of obstacle-
+      free space through semidefinite programming," in Proceedings of
+      Algorithmic Foundations of Robotics XI: Selected Contributions of the
+      Eleventh International Workshop on the Algorithmic Foundations of
+      Robotics, pp. 109­124, Springer, 2015.
+
+[19] D. Dolgov, S. Thrun, M. Montemerlo, and J. Diebel, "Path planning
+      for autonomous vehicles in unknown semi-structured environments,"
+      The international journal of robotics research, vol. 29, no. 5, pp. 485­
+      501, 2010.
+
+[20] T. Lipp and S. Boyd, "Minimum-time speed optimisation over a fixed
+      path," International Journal of Control, vol. 87, no. 6, pp. 1297­1311,
+      2014.
+
+                                                                                   7355
+Authorized licensed use limited to: Harvard University SEAS. Downloaded on April 25,2026 at 02:54:31 UTC from IEEE Xplore. Restrictions apply.
+
