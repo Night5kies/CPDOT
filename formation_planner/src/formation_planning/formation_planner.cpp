@@ -713,9 +713,20 @@ bool ObstacleIntersecting(const std::vector<Point>& poly_robot, std::shared_ptr<
 }
 
 void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons) {
+  std::vector<int> obstacle_idx_unused;
+  GenerateHeightConsWithIdx(guess, env, height_cons, obstacle_idx_unused);
+}
+
+// Extension B helper: same as GenerateHeightCons but also returns, for each
+// timestep, the index of the obstacle the formation is crossing (or -1 if
+// none). Used to fingerprint the offending obstacle on a MAX_FORMATION exit.
+void FormationPlanner::GenerateHeightConsWithIdx(const std::vector<FullStates>& guess,
+                                                 std::shared_ptr<Environment> env,
+                                                 std::vector<double>& height_cons,
+                                                 std::vector<int>& obstacle_idx) {
   int num_robot = guess.size();
-  height_cons.resize(guess[0].states.size());
-  std::vector<double> collided_obs(guess[0].states.size());
+  height_cons.assign(guess[0].states.size(), -1);
+  obstacle_idx.assign(guess[0].states.size(), -1);
   int obs_index;
   std::vector<Point> poly_robot;
   for (int i = 0; i < guess[0].states.size(); i++) {
@@ -723,34 +734,59 @@ void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess, 
     for (int j = 0; j < num_robot; j++) {
       poly_robot.push_back({guess[j].states[i].x, guess[j].states[i].y});
     }
-    // for (int k = 0; k < env->heights().size(); k++) {
     if (ObstacleIntersecting(poly_robot, env, obs_index)) {
       height_cons[i] = env->heights()[obs_index];
-    }
-    else {
+      obstacle_idx[i] = obs_index;
+    } else {
       height_cons[i] = -1;
+      obstacle_idx[i] = -1;
     }
-    // }
   }
 }
 
-// simple version
-void GenerateDesiredRP(const std::vector<double>& height_cons, std::vector<double>& height_cons_set) {
+// Extension A: analytical inner-loop step.
+//
+// height_cons[i] is the height of the obstacle the formation is crossing at
+// timestep i (or -1 if no crossing). For an inelastic sheet held at contact
+// height z_r by N robots, the cable from contact to object has fixed length
+// l_i = formation_radius (the maximum r_oi when the sheet is flat). To raise
+// the object to clear an obstacle of height h, the horizontal projection
+// must satisfy r_oi = sqrt(l_i^2 - (z_r - h)^2). For N robots arranged
+// regularly, the inter-robot distance between adjacent robots is
+// r_ij = 2 * r_oi * sin(pi / N). This gives a one-shot lower bound for
+// height_cons_set[i] that the OCP must enforce. Replaces the previous
+// trial-and-error += radius_inc loop.
+void GenerateDesiredRP(const std::vector<double>& height_cons,
+                       std::vector<double>& height_cons_set,
+                       int num_robot) {
   VVCM vvcm;
-  // double li = vvcm.xv2 / sqrt(3);
-  for (int i = 0; i < height_cons.size(); i++) {
+  const double l_i = vvcm.formation_radius;
+  const double z_r = vvcm.zr;
+  const double h_safety = 0.05;
+  const double margin   = 0.05;
+  const double sin_factor = (num_robot >= 2)
+      ? 2.0 * std::sin(M_PI / static_cast<double>(num_robot))
+      : 1.0;
+  for (int i = 0; i < static_cast<int>(height_cons.size()); i++) {
     if (height_cons[i] == -1) {
       height_cons_set[i] = -1;
+      continue;
     }
-    else {
-      // double r_oi = sqrt(li * li - pow(vvcm.zr - height_cons[i], 2));
-      // double r_ij = r_oi * sqrt(3);
-      if (height_cons_set[i] == -1) {
-        height_cons_set[i] = vvcm.xv2t;
-      }
-      else {
-        height_cons_set[i] += vvcm.radius_inc;
-      }
+    const double h_target = height_cons[i] + h_safety;
+    const double drop = z_r - h_target;
+    double required_r_ij;
+    if (drop <= 0.0) {
+      required_r_ij = vvcm.xv2t;
+    } else if (drop >= l_i) {
+      required_r_ij = vvcm.formation_radius * sin_factor;
+    } else {
+      const double r_oi = std::sqrt(l_i * l_i - drop * drop);
+      required_r_ij = r_oi * sin_factor;
+    }
+    if (height_cons_set[i] == -1) {
+      height_cons_set[i] = std::max(vvcm.xv2t, required_r_ij);
+    } else {
+      height_cons_set[i] = std::max(height_cons_set[i] + margin, required_r_ij);
     }
   }
 }
@@ -775,8 +811,20 @@ bool FormationPlanner::Plan_fm(
   double& avg, double& std,
   double& final_infeasibility,
   double initial_guess_noise_stddev,
-  unsigned int initial_guess_noise_seed) {
-  std::string package_path = ros::package::getPath("formation_planner");   
+  unsigned int initial_guess_noise_seed,
+  PruningContext* pruning) {
+  std::string package_path = ros::package::getPath("formation_planner");
+  // Extension B: scratch state used at the return-false sites to record why
+  // this combination was abandoned. Persisted back into *pruning only when a
+  // failure occurs. on_fail() is the single point that writes to *pruning.
+  std::vector<int> obstacle_idx_at_t;
+  auto on_fail = [&](int reason, int obs_idx) -> bool {
+    if (pruning) {
+      pruning->failure_reason = reason;
+      pruning->failed_obstacle_idx = obs_idx;
+    }
+    return false;
+  };
   double solve_time = 0.0;
   cost = 0.0;
   final_infeasibility = std::numeric_limits<double>::quiet_NaN();
@@ -893,7 +941,19 @@ bool FormationPlanner::Plan_fm(
   std::vector<double> height_cons, height;
   std::vector<double> height_cons_set(guess[0].states.size(), vvcm.xv2t);
   warm_start = 0;
-  GenerateHeightCons(guess, env_, height_cons);
+  GenerateHeightConsWithIdx(guess, env_, height_cons, obstacle_idx_at_t);
+
+  // Extension B: cheap up-front prune. If any obstacle this combination is
+  // about to cross has already been proven uncrossable by max formation in a
+  // sibling combination, abandon the OCP solve before paying for it.
+  if (pruning && pruning->enable && !pruning->blocked_obstacles.empty()) {
+    for (int idx : obstacle_idx_at_t) {
+      if (idx >= 0 && pruning->blocked_obstacles.count(idx) > 0) {
+        ROS_WARN("Extension B: pruning combination — crosses blocked obstacle %d", idx);
+        return on_fail(PruningContext::FAIL_PRUNED, idx);
+      }
+    }
+  }
   result = guess;
   while (
   // !CheckHeightCons(result, height_cons, vertice_set, height) || 
@@ -918,19 +978,19 @@ bool FormationPlanner::Plan_fm(
       if(!problem_->SolveFm(config_->opti_w_penalty0, constraints, guess, result, infeasibility, solve_time, corridor_cons, height_cons_set)) {
         final_infeasibility = infeasibility;
         LogSolveFailure("SolveFm failed during warm start", infeasibility, config_->opti_varepsilon_tol);
-        return false;
+        return on_fail(PruningContext::FAIL_WARM_START, -1);
       }
       final_infeasibility = infeasibility;
       solve_time_set.push_back(solve_time);
       if(infeasibility > 1) {
         LogInfeasibilityLimitExceeded("Warm-start infeasibility too large", infeasibility, 1.0);
-        return false;
+        return on_fail(PruningContext::FAIL_INFEAS_LIMIT, -1);
       }
       guess = result;
       if (result_opt.empty()) {
         result_opt = result;
       }
-      GenerateHeightCons(result, env_, height_cons);
+      GenerateHeightConsWithIdx(result, env_, height_cons, obstacle_idx_at_t);
       if (result_opt[0].tf > result[0].tf) {
         result_opt = result;
       }
@@ -958,8 +1018,8 @@ bool FormationPlanner::Plan_fm(
     }
     // generate inter-distance constraints
     if (!CheckHeightCons(result, height_cons, vertice_set, height)){
-      GenerateHeightCons(guess, env_, height_cons);
-      GenerateDesiredRP(height_cons, height_cons_set);
+      GenerateHeightConsWithIdx(guess, env_, height_cons, obstacle_idx_at_t);
+      GenerateDesiredRP(height_cons, height_cons_set, num_robot);
     }
     else if (result_opt.empty() || result_opt[0].tf > result[0].tf) {
       ROS_WARN("Better solution found!");
@@ -968,24 +1028,39 @@ bool FormationPlanner::Plan_fm(
     if(!problem_->SolveFm(config_->opti_w_penalty0, constraints, guess, result, infeasibility, solve_time, corridor_cons, height_cons_set)) {
       final_infeasibility = infeasibility;
       LogSolveFailure("SolveFm failed during refinement", infeasibility, config_->opti_varepsilon_tol);
-      return false;
+      return on_fail(PruningContext::FAIL_REFINEMENT, -1);
     }
     final_infeasibility = infeasibility;
     solve_time_set.push_back(solve_time);
     guess = result;
-    int max_radius = 0.0; 
-    for (int j = 0; j < height_cons_set.size(); j++) {
+    double max_radius = 0.0;
+    int max_radius_t = -1;
+    for (int j = 0; j < static_cast<int>(height_cons_set.size()); j++) {
       if (max_radius < height_cons_set[j]) {
         max_radius = height_cons_set[j];
+        max_radius_t = j;
       }
     }
     if (max_radius > vvcm.formation_radius) {
-      ROS_ERROR("Exceed maximum radius!");
-      return false;
+      // Extension B: identify the offending obstacle so the caller can mark
+      // it uncrossable for sibling combinations. obstacle_idx_at_t is kept in
+      // sync via GenerateHeightConsWithIdx above; fall back to scanning for
+      // any non-(-1) entry near max_radius_t if the exact slot is empty.
+      int offending_obs = -1;
+      if (max_radius_t >= 0 && max_radius_t < static_cast<int>(obstacle_idx_at_t.size())) {
+        offending_obs = obstacle_idx_at_t[max_radius_t];
+      }
+      if (offending_obs < 0) {
+        for (int j = 0; j < static_cast<int>(obstacle_idx_at_t.size()); j++) {
+          if (obstacle_idx_at_t[j] >= 0) { offending_obs = obstacle_idx_at_t[j]; break; }
+        }
+      }
+      ROS_ERROR("Exceed maximum radius! offending obstacle = %d", offending_obs);
+      return on_fail(PruningContext::FAIL_MAX_FORMATION, offending_obs);
     }
     if(infeasibility > 0.5) {
       LogInfeasibilityLimitExceeded("Refinement infeasibility too large", infeasibility, 0.5);
-      return false;
+      return on_fail(PruningContext::FAIL_INFEAS_LIMIT, -1);
     }
     // if (warm_start > 5 && result_opt[0].tf < 100 && infeasibility < 0.001) {
     //   for (int i = 0; i < result_opt.size(); i++) {

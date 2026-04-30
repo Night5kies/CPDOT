@@ -12,12 +12,31 @@
 #include "environment.h"
 #include "coarse_path_planner.h"
 #include <vector>
+#include <set>
 #include "iris/iris.h"
 
 #ifndef SRC_formation_planner_H
 #define SRC_formation_planner_H
 
 namespace formation_planner {
+
+// Extension B: failure-aware combination pruning.
+// Input fields are read by Plan_fm; output fields are written when Plan_fm
+// returns false. The caller maintains blocked_obstacles across combinations
+// and consults failure_reason / failed_obstacle_idx to decide what to add.
+struct PruningContext {
+  static constexpr int FAIL_NONE          = 0;
+  static constexpr int FAIL_WARM_START    = 1;
+  static constexpr int FAIL_INFEAS_LIMIT  = 2;
+  static constexpr int FAIL_MAX_FORMATION = 3;
+  static constexpr int FAIL_REFINEMENT    = 4;
+  static constexpr int FAIL_PRUNED        = 5;
+
+  bool enable = false;
+  std::set<int> blocked_obstacles;
+  int failed_obstacle_idx = -1;
+  int failure_reason = FAIL_NONE;
+};
 
 class FormationPlanner {
 public:
@@ -50,8 +69,11 @@ public:
   double& avg, double& std,
   double& final_infeasibility,
   double initial_guess_noise_stddev = 0.0,
-  unsigned int initial_guess_noise_seed = 0u);
+  unsigned int initial_guess_noise_seed = 0u,
+  PruningContext* pruning = nullptr);
   void GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons);
+  void GenerateHeightConsWithIdx(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env,
+                                 std::vector<double>& height_cons, std::vector<int>& obstacle_idx);
 
 private:
   std::shared_ptr<PlannerConfig> config_;

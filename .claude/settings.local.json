@@ -3,7 +3,12 @@
     "allow": [
       "Read(///wsl.localhost/Ubuntu-20.04/home/night/CPDOT2/src/**)",
       "Read(///wsl.localhost/Ubuntu-20.04/home/night/CPDOT2/src/CPDOT2/formation_planner/**)",
-      "Bash(wsl *)"
+      "Bash(wsl *)",
+      "Bash(wsl.exe -d Ubuntu-20.04 -- bash -lc 'cd ~/CPDOT2 && pwd && ls')",
+      "Bash(wsl.exe -d Ubuntu-20.04 -- bash -lc 'cd ~/CPDOT2 && source devel/setup.bash && cd build && make help 2>&1 | grep -i \"topolog\\\\|formation\" | head -30')",
+      "Bash(wsl.exe -d Ubuntu-20.04 -- bash -lc 'cd ~/CPDOT2/src/CPDOT2/formation_planner && touch src/formation_planning/formation_planner.cpp src/formation_planning/topologic_pp.cpp include/formation_planner/formation_planner.h && cd ~/CPDOT2/build/formation_planner && make topologic_test -j2 2>&1 | tail -40')",
+      "Bash(wsl.exe -d Ubuntu-20.04 -- bash -lc 'rm -f ~/CPDOT2/build/formation_planner/CMakeFiles/formation_planner.dir/src/formation_planning/formation_planner.cpp.o ~/CPDOT2/build/formation_planner/CMakeFiles/topologic_pp.dir/src/formation_planning/topologic_pp.cpp.o && cd ~/CPDOT2/build/formation_planner && make topologic_test -j2 2>&1 | tail -100')",
+      "Bash(wsl.exe -d Ubuntu-20.04 -- bash -lc 'cd ~/CPDOT2/build/formation_planner && make formation_planner topologic_pp -B -j2 2>&1 | tail -40')"
     ]
   }
 }

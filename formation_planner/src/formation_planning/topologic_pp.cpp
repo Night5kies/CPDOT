@@ -28,6 +28,9 @@
 #include <Eigen/Core>
 #include <math.h>
 #include <random>
+#include <cstdlib>
+#include <set>
+#include <string>
 #include <cmath>
 #include <vector>
 #include <cstdlib>
@@ -720,7 +723,25 @@ int main(int argc, char **argv) {
           // }
           ros::Time t1;
           t1 = ros::Time::now();
-          #pragma omp parallel 
+
+          // Extension B: failure-aware combination pruning. blocked_obstacles
+          // is shared across all OMP threads. If a thread fails a combination
+          // because the formation could not lift the object high enough at
+          // some obstacle (FAIL_MAX_FORMATION), that obstacle goes in here,
+          // and any sibling combination that would also have to cross it is
+          // skipped before its OCP solve. The runtime toggle CPDOT_FAILURE_PRUNING
+          // (default 1) lets you ablate without recompiling.
+          const char* env_prune = std::getenv("CPDOT_FAILURE_PRUNING");
+          const bool failure_pruning_enable = (env_prune == nullptr) || (std::string(env_prune) != "0");
+          std::set<int> shared_blocked_obstacles;
+          int shared_pruned_count = 0;
+          if (failure_pruning_enable) {
+            ROS_WARN("Extension B: failure-aware combination pruning ENABLED");
+          } else {
+            ROS_WARN("Extension B: failure-aware combination pruning DISABLED");
+          }
+
+          #pragma omp parallel
           {
             std::vector<FullStates> local_best_solution_set;
             double local_best_tf = std::numeric_limits<double>::max();
@@ -773,11 +794,37 @@ int main(int argc, char **argv) {
                 // if(!planner_->Plan(solution, start_set[2], goal_set[2], iris_problem, solution, coarse_path_time, solve_time_leader, show_cr, corridors_sets[2])) {
                 //   ROS_ERROR("re-plan trajectory optimization failed!");
                 // }
+              // Extension B: snapshot the shared blocked-obstacle set under
+              // critical section so reads are consistent within this trial.
+              formation_planner::PruningContext pruning_ctx;
+              pruning_ctx.enable = failure_pruning_enable;
+              if (failure_pruning_enable) {
+                #pragma omp critical (cpdot_failure_pruning)
+                {
+                  pruning_ctx.blocked_obstacles = shared_blocked_obstacles;
+                }
+              }
               bool plan_succeeded = planner_->Plan_fm(
-                local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set, 
+                local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set,
                 local_solve_time_set, show_cr, polys_inflat_, hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost, local_solve_success,
                 local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility,
-                solver_initial_noise_stddev, static_cast<unsigned int>(random_seed + case_num));
+                solver_initial_noise_stddev, static_cast<unsigned int>(random_seed + case_num),
+                &pruning_ctx);
+              if (failure_pruning_enable && !plan_succeeded) {
+                #pragma omp critical (cpdot_failure_pruning)
+                {
+                  if (pruning_ctx.failure_reason == formation_planner::PruningContext::FAIL_MAX_FORMATION
+                      && pruning_ctx.failed_obstacle_idx >= 0) {
+                    shared_blocked_obstacles.insert(pruning_ctx.failed_obstacle_idx);
+                    ROS_WARN("Extension B: marking obstacle %d as uncrossable (combination %d)",
+                             pruning_ctx.failed_obstacle_idx, i);
+                  } else if (pruning_ctx.failure_reason == formation_planner::PruningContext::FAIL_PRUNED) {
+                    shared_pruned_count++;
+                    ROS_WARN("Extension B: combination %d skipped via prune table (obs=%d)",
+                             i, pruning_ctx.failed_obstacle_idx);
+                  }
+                }
+              }
               bool has_local_solution =
                 !local_solution_set.empty() && !local_solution_set[0].states.empty();
               if (has_local_solution) {
