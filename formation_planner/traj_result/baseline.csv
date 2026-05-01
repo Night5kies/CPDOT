@@ -1,0 +1,4 @@
+num_robot,opti_t,opti_w_a,opti_w_omega,opti_w_penalty0,opti_w_formation,opti_w_topo,opti_w_sfc,seed,trial,trial_success,solve_success,success_strict,success_any_solution,success_feasible,final_infeasibility,n_solutions,time_topo_s,time_filter_s,time_coarse_s,time_to_s,time_total_s,outer_iters,inner_iters,tf_s,distance_m,config_timed_out
+4,1,1,1,10000,1,1,1,277,0,0,0,0,1,0,nan,4,128.494,0.00960922,11.101,0,16.4824,1,0,103.483,201.904,0
+?,1.0,1.0,1.0,10000.0,1.0,1.0,1.0,278,1,0,0,0,0,0,nan,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,1
+?,1.0,1.0,1.0,10000.0,1.0,1.0,1.0,279,2,0,0,0,0,0,nan,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,1
