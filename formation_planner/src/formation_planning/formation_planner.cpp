@@ -21,6 +21,8 @@
 #include <tf2/utils.h>
 #include <limits>
 #include <random>
+#include <cstdlib>
+#include <string>
 using namespace forward_kinematics;
 namespace formation_planner {
 struct Data {
@@ -744,49 +746,65 @@ void FormationPlanner::GenerateHeightConsWithIdx(const std::vector<FullStates>& 
   }
 }
 
-// Extension A: analytical inner-loop step.
+// Extension A: analytical inner-loop step (gated by env var).
 //
-// height_cons[i] is the height of the obstacle the formation is crossing at
-// timestep i (or -1 if no crossing). For an inelastic sheet held at contact
-// height z_r by N robots, the cable from contact to object has fixed length
-// l_i = formation_radius (the maximum r_oi when the sheet is flat). To raise
-// the object to clear an obstacle of height h, the horizontal projection
-// must satisfy r_oi = sqrt(l_i^2 - (z_r - h)^2). For N robots arranged
-// regularly, the inter-robot distance between adjacent robots is
-// r_ij = 2 * r_oi * sin(pi / N). This gives a one-shot lower bound for
-// height_cons_set[i] that the OCP must enforce. Replaces the previous
-// trial-and-error += radius_inc loop.
+// When CPDOT_ANALYTICAL_LIFT=1, computes the required inter-robot distance
+// analytically from the inelastic-sheet geometry: for an obstacle at height h
+// and contact height z_r with cable length l_i = formation_radius, the
+// horizontal projection r_oi = sqrt(l_i^2 - (z_r - h)^2) and adjacent-pair
+// inter-robot distance r_ij = 2 * r_oi * sin(pi / N).
+//
+// When unset or set to anything other than "1" (the default), falls back to
+// the paper's trial-and-error += radius_inc step so the binary reproduces the
+// vanilla algorithm without recompilation.
 void GenerateDesiredRP(const std::vector<double>& height_cons,
                        std::vector<double>& height_cons_set,
                        int num_robot) {
+  static const char* env_a = std::getenv("CPDOT_ANALYTICAL_LIFT");
+  static const bool analytical_enable =
+      (env_a != nullptr) && (std::string(env_a) == "1");
   VVCM vvcm;
-  const double l_i = vvcm.formation_radius;
-  const double z_r = vvcm.zr;
-  const double h_safety = 0.05;
-  const double margin   = 0.05;
-  const double sin_factor = (num_robot >= 2)
-      ? 2.0 * std::sin(M_PI / static_cast<double>(num_robot))
-      : 1.0;
-  for (int i = 0; i < static_cast<int>(height_cons.size()); i++) {
-    if (height_cons[i] == -1) {
-      height_cons_set[i] = -1;
-      continue;
+  if (analytical_enable) {
+    const double l_i = vvcm.formation_radius;
+    const double z_r = vvcm.zr;
+    const double h_safety = 0.05;
+    const double margin   = 0.05;
+    const double sin_factor = (num_robot >= 2)
+        ? 2.0 * std::sin(M_PI / static_cast<double>(num_robot))
+        : 1.0;
+    for (int i = 0; i < static_cast<int>(height_cons.size()); i++) {
+      if (height_cons[i] == -1) {
+        height_cons_set[i] = -1;
+        continue;
+      }
+      const double h_target = height_cons[i] + h_safety;
+      const double drop = z_r - h_target;
+      double required_r_ij;
+      if (drop <= 0.0) {
+        required_r_ij = vvcm.xv2t;
+      } else if (drop >= l_i) {
+        required_r_ij = vvcm.formation_radius * sin_factor;
+      } else {
+        const double r_oi = std::sqrt(l_i * l_i - drop * drop);
+        required_r_ij = r_oi * sin_factor;
+      }
+      if (height_cons_set[i] == -1) {
+        height_cons_set[i] = std::max(vvcm.xv2t, required_r_ij);
+      } else {
+        height_cons_set[i] = std::max(height_cons_set[i] + margin, required_r_ij);
+      }
     }
-    const double h_target = height_cons[i] + h_safety;
-    const double drop = z_r - h_target;
-    double required_r_ij;
-    if (drop <= 0.0) {
-      required_r_ij = vvcm.xv2t;
-    } else if (drop >= l_i) {
-      required_r_ij = vvcm.formation_radius * sin_factor;
-    } else {
-      const double r_oi = std::sqrt(l_i * l_i - drop * drop);
-      required_r_ij = r_oi * sin_factor;
-    }
-    if (height_cons_set[i] == -1) {
-      height_cons_set[i] = std::max(vvcm.xv2t, required_r_ij);
-    } else {
-      height_cons_set[i] = std::max(height_cons_set[i] + margin, required_r_ij);
+  } else {
+    for (int i = 0; i < static_cast<int>(height_cons.size()); i++) {
+      if (height_cons[i] == -1) {
+        height_cons_set[i] = -1;
+        continue;
+      }
+      if (height_cons_set[i] == -1) {
+        height_cons_set[i] = vvcm.xv2t;
+      } else {
+        height_cons_set[i] += vvcm.radius_inc;
+      }
     }
   }
 }

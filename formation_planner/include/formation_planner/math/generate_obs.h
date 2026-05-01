@@ -28,23 +28,15 @@ class GenerateObstacle{
         };
         std::vector<Vec2d> rotatedPoints;
         double width, height;
+        // Paper Sec. VI-A.2: each obstacle is one of two box sizes. The caller
+        // splits half/half by index via the inflat flag.
         if (inflat) {
-            width = 4;
-            height = 1;
-            // width = 1;
-            // height = 0.5;
-            // width = 0.41;
-            // height = 0.29;        
+            width = 2.0;
+            height = 1.0;
         }
         else {
-            width = 6;
-            height = 3;
-            // width = 1.5;
-            // height = 0.75;
-            // width = 2.4;
-            // height = 0.28;    
-            // width = obs_size[obs_type][0];
-            // height = obs_size[obs_type][1];
+            width = 1.5;
+            height = 0.75;
         }
         std::vector<Vec2d> relativeVertex;
         relativeVertex.push_back({-width / 2, height / 2 });

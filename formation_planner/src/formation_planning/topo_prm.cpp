@@ -45,11 +45,17 @@ void TopologyPRM::init(ros::NodeHandle& nh) {
   // nh.param("topo_prm/parallel_shortcut", parallel_shortcut_, false);
   sample_inflate_(0) = 25;
   sample_inflate_(1) = 2;
+  // Read max_sample_num override (default 1500). 5000 was the previous hardcoded
+  // value; visibility-check cost grows roughly linearly with this count and was
+  // dominating PRM time at the paper-faithful workspace size.
+  if (!nh.getParam("topo_prm/max_sample_num", max_sample_num_)) {
+    max_sample_num_ = 1500;
+  }
   clearance_ = 0.1;
   short_cut_num_ = 1;
   reserve_num_ = 10;
   ratio_to_short_ = 5.5;
-  max_sample_num_ = 5000;
+  // max_sample_num_ already set above from rosparam (default 1500)
   max_sample_time_ = 0.005;
   max_raw_path_ = 20;
   max_raw_path2_ = 50;
@@ -128,9 +134,13 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector2d start, Eigen::Vect
   graph_.push_back(start_node);
   graph_.push_back(end_node);
 
-  // sample region (rectangle)
-  // sample_r_(0) = 0.5 * (end - start).norm() + sample_inflate_(0);
-  sample_r_(0) = sample_inflate_(0);
+  // sample region (rectangle, axis-aligned with the start→goal vector).
+  // sample_r_(0) is the half-length along that axis; sample_r_(1) the
+  // half-width. Auto-sizing the half-length is necessary so the PRM can
+  // reach start and goal regardless of how far apart they are. Without it,
+  // a fixed sample_inflate_(0) shorter than 0.5 * |end - start| leaves the
+  // endpoints outside the sampling box and the search never connects.
+  sample_r_(0) = 0.5 * (end - start).norm() + sample_inflate_(0);
   sample_r_(1) = sample_inflate_(1) * rectangle_ratio;
 
   // transformation
@@ -169,8 +179,10 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector2d start, Eigen::Vect
     // edt_environment_->evaluateEDTWithGrad(pt, -1.0, dist, grad);
     // invalid sample
     math::Pose pose(pt.x(), pt.y(), 0.0);
-    auto config_ = std::make_shared<PlannerConfig>();
-    config_->vehicle.InitializeDiscs();
+    // (Previously: a fresh PlannerConfig was constructed and InitializeDiscs() called
+    //  on every sample iteration, ~5000x per PRM call. That dead config_ shadowed the
+    //  class member, was never read inside the loop, and was the dominant cost in
+    //  graph construction time. Removed.)
     if(env_->CheckPoseCollision(0.0, pose)) {
       sample_time += (ros::Time::now() - t1).toSec();
       continue;

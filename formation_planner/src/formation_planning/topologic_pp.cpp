@@ -224,8 +224,8 @@ TrajectoryPoint generateRandomnObstacle() {
   Point P(0, 0);
   do
   {
-    point.x = getRandomDouble(-27, 27);
-    point.y = getRandomDouble(-27, 27);
+    point.x = getRandomDouble(-30, 30);
+    point.y = getRandomDouble(-30, 30);
     point.theta = getRandomAngle();
     P.x = point.x;
     P.y = point.y;
@@ -405,7 +405,7 @@ std::vector<std::vector<math::Vec2d>>& poly_vertices_set, math::GenerateObstacle
   }
   for (int i = 0; i < num_obs; i++)
   {
-    height.push_back(getRandomDouble(0.45, 0.8));
+    height.push_back(getRandomDouble(0.4, 0.8));
   }
   // height = {0.4, 0.7, 9.4, 9.4, 9.7, 9.7, 9.7 ,9.7};
   // height = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.6, 0.79, 0.5};
@@ -491,18 +491,19 @@ int main(int argc, char **argv) {
   std::vector<std::vector<double>> height_set;
   auto env = std::make_shared<Environment>(config_);
   auto planner_ = std::make_shared<FormationPlanner>(config_, env);
-  std::vector<int> num_obs_set = {10, 20, 30, 40, 50};
   // std::vector<int> num_robot_set = {3, 4, 5};
   ros::NodeHandle nh;
 
   // --- sweep parameters (all settable via rosparam, no recompile needed) ---
-  int   n_trials, random_seed, topo_prm_seed;
+  int   n_trials, random_seed, topo_prm_seed, num_obs, opti_inner_iter_max_p;
   double opti_t_p, opti_w_a_p, opti_w_omega_p, opti_w_penalty0_p;
   double opti_w_formation_p, opti_w_topo_p, opti_w_sfc_p;
   double solver_initial_noise_stddev;
-  nh.param("n_trials",         n_trials,            20);
-  nh.param("random_seed",      random_seed,         42);
-  nh.param("topo_prm_seed",    topo_prm_seed,       42);
+  nh.param("n_trials",            n_trials,             50);
+  nh.param("random_seed",         random_seed,          42);
+  nh.param("topo_prm_seed",       topo_prm_seed,        42);
+  nh.param("num_obs",             num_obs,              60);
+  nh.param("opti_inner_iter_max", opti_inner_iter_max_p, 30);
   nh.param("opti_t",           opti_t_p,            config_->opti_t);
   nh.param("opti_w_a",         opti_w_a_p,          config_->opti_w_a);
   nh.param("opti_w_omega",     opti_w_omega_p,      config_->opti_w_omega);
@@ -518,8 +519,10 @@ int main(int argc, char **argv) {
   config_->opti_w_formation = opti_w_formation_p;
   config_->opti_w_topo      = opti_w_topo_p;
   config_->opti_w_sfc       = opti_w_sfc_p;
-  ROS_INFO("[sweep] n_trials=%d seed=%d topo_seed=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
-           n_trials, random_seed, topo_prm_seed, config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
+  config_->opti_inner_iter_max = opti_inner_iter_max_p;
+  ROS_INFO("[sweep] n_trials=%d num_obs=%d seed=%d topo_seed=%d opti_inner_iter_max=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
+           n_trials, num_obs, random_seed, topo_prm_seed, opti_inner_iter_max_p,
+           config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
            config_->opti_w_formation, config_->opti_w_topo, config_->opti_w_sfc);
 
   // --- CSV output ---
@@ -615,17 +618,14 @@ int main(int argc, char **argv) {
       pair_array.push_back({double(i), double(j)});
     }
   }
-  while(ros::ok()) { 
+  while(ros::ok()) {
     // for (int robot_num_ind = 0; robot_num_ind < num_robot_set.size(); robot_num_ind++) {
       // int num_robot_ = num_robot_set[robot_num_ind];
-      for (int obs_num_ind = 0; obs_num_ind < num_obs_set.size(); obs_num_ind++) {
-        // int num_obs = num_obs_set[obs_num_ind];
-        int num_obs = 70;
         for (int case_num = 0; case_num < n_trials && ros::ok(); case_num++) {
-          double start_point_x = -15.0;
-          double start_point_y = 0.0;
-          double goal_point_x  =  15.0;
-          double goal_point_y  = 0.0;
+          double start_point_x = -35.0;
+          double start_point_y = -35.0;
+          double goal_point_x  =  35.0;
+          double goal_point_y  =  35.0;
           Eigen::Vector2d fc_start = {start_point_x, start_point_y};
           Eigen::Vector2d fc_goal = {goal_point_x, goal_point_y};
           std::vector<Eigen::Vector2d> start_pts;
@@ -634,8 +634,23 @@ int main(int argc, char **argv) {
           std::vector<TrajectoryPoint> goal_set;
           generateRegularPolygon(start_point_x, start_point_y, vvcm.formation_radius, num_robot, start_pts, start_set);
           generateRegularPolygon(goal_point_x, goal_point_y, vvcm.formation_radius, num_robot, goal_pts, goal_set);
-          DefineRandomObstacle(3, height_set, obstacle, height, polys, polys_inflat,
-                               polys_inflat_, poly_vertices_set, generateobs);
+          // Random obstacles per the paper's comprehensive analysis (Sec. VI-A.2).
+          // GenerateRandomObstacle samples num_obs centers in [-30,30]^2 (subject to
+          // the diagonal-corridor exclusion in generateRandomnObstacle), heights in
+          // [0.4, 0.8], and dimensions 1.5x0.75 or 2.0x1.0 (half/half by index).
+          GenerateRandomObstacle(num_obs, height_set, obstacle, height, polys,
+                                 polys_inflat, poly_vertices_set, generateobs);
+          // GenerateRandomObstacle does not populate polys_inflat_; mirror the
+          // +/-0.5 m clearance copy that DefineRandomObstacle used to produce.
+          polys_inflat_.clear();
+          for (size_t i = 0; i < polys.size(); i++) {
+            polys_inflat_.push_back(math::Polygon2d({
+              {polys[i].points()[0].x() - 0.5, polys[i].points()[0].y() + 0.5},
+              {polys[i].points()[1].x() - 0.5, polys[i].points()[1].y() - 0.5},
+              {polys[i].points()[2].x() + 0.5, polys[i].points()[2].y() - 0.5},
+              {polys[i].points()[3].x() + 0.5, polys[i].points()[3].y() + 0.5}
+            }));
+          }
           formation_planner::TopologyPRM topo_prm(config_, env);
           CoarsePathPlanner coarse_topo_path(config_, env);
           std::vector<FullStates> solution_set(num_robot);
@@ -667,14 +682,31 @@ int main(int argc, char **argv) {
             // color.set_alpha(1- height[i]);
             visualization::PlotPolygon(polys[i], 0.05, color, i, "Obstacle"+  std::to_string(i));
           }
-          visualization::Trigger();   
+          visualization::Trigger();
+          ROS_INFO_STREAM("[sweep] trial " << case_num << ": entering PRM (num_obs=" << num_obs
+                          << ", start=(" << start_point_x << "," << start_point_y
+                          << ") goal=(" << goal_point_x << "," << goal_point_y << "))");
           double ratio = 1;
+          int prm_attempt = 0;
           while (select_paths.empty()) {
             /* Optional: PRM */
+            ROS_INFO_STREAM("[sweep]   PRM attempt " << prm_attempt << " ratio=" << ratio);
             topo_prm.findTopoPaths(fc_start, fc_goal, graph,
                                     raw_paths, filtered_paths, select_paths, topo_search_time, ratio);
-            ratio *= 1.5;                   
+            ROS_INFO_STREAM("[sweep]   PRM attempt " << prm_attempt << " done, select_paths.size()="
+                            << select_paths.size() << " topo_search_time=" << topo_search_time);
+            ratio *= 1.5;
+            ++prm_attempt;
+            if (prm_attempt > 8) {
+              ROS_ERROR_STREAM("[sweep] PRM failed to find any path after 8 attempts; aborting trial");
+              break;
+            }
           }
+          if (select_paths.empty()) {
+            // Skip this trial and continue (avoids deadlock if the PRM truly cannot find a path).
+            continue;
+          }
+          ROS_INFO_STREAM("[sweep] trial " << case_num << ": PRM done, " << select_paths.size() << " path(s)");
           /* Rewire the paths */
           for (int i = 0; i < num_robot; i++) {
             for (int j = 0; j < select_paths.size(); j++) {
@@ -730,9 +762,9 @@ int main(int argc, char **argv) {
           // some obstacle (FAIL_MAX_FORMATION), that obstacle goes in here,
           // and any sibling combination that would also have to cross it is
           // skipped before its OCP solve. The runtime toggle CPDOT_FAILURE_PRUNING
-          // (default 1) lets you ablate without recompiling.
+          // (default OFF, i.e. paper-vanilla) lets you opt in without recompiling.
           const char* env_prune = std::getenv("CPDOT_FAILURE_PRUNING");
-          const bool failure_pruning_enable = (env_prune == nullptr) || (std::string(env_prune) != "0");
+          const bool failure_pruning_enable = (env_prune != nullptr) && (std::string(env_prune) == "1");
           std::set<int> shared_blocked_obstacles;
           int shared_pruned_count = 0;
           if (failure_pruning_enable) {
@@ -1013,7 +1045,6 @@ int main(int argc, char **argv) {
                  successful_trials, n_trials, csv_path.c_str());
         ros::shutdown();
         return 0;
-      }
     // }
     // for (int j = 0; j < solution_set_opt.size(); j++) {
     //   writeTrajectoryToYAML(solution_set_opt[j], "/home/weijian/CPDOT/src/formation_planner/traj_result/flexible_formation/" 
