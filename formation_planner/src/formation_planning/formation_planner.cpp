@@ -19,8 +19,12 @@
 #include <nav_msgs/Path.h>
 #include <tf/transform_datatypes.h>
 #include <tf2/utils.h>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <limits>
 #include <random>
+#include <string>
 using namespace forward_kinematics;
 namespace formation_planner {
 struct Data {
@@ -75,6 +79,66 @@ void PerturbInitialGuess(std::vector<FullStates>& guess,
       robot_guess.states[i].theta += theta_noise(rng);
     }
   }
+}
+
+bool GetEnvFlag(const char* name) {
+  const char* raw_value = std::getenv(name);
+  if (raw_value == nullptr) {
+    return false;
+  }
+
+  std::string value(raw_value);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return !(value.empty() || value == "0" || value == "false" || value == "off" || value == "no");
+}
+
+void AppendUniqueObstacle(std::vector<int>& obstacle_ids, int obstacle_id) {
+  if (obstacle_id < 0) {
+    return;
+  }
+  if (std::find(obstacle_ids.begin(), obstacle_ids.end(), obstacle_id) == obstacle_ids.end()) {
+    obstacle_ids.push_back(obstacle_id);
+  }
+}
+
+bool TryComputeAnalyticalLiftRadius(double obstacle_height,
+                                    int num_robot,
+                                    double& required_radius,
+                                    double* required_inter_robot_distance = nullptr) {
+  VVCM vvcm;
+  const double li = vvcm.formation_radius;
+  const double vertical_offset = vvcm.zr - obstacle_height;
+  const double radicand = li * li - vertical_offset * vertical_offset;
+  if (radicand < -1e-9) {
+    return false;
+  }
+
+  required_radius = std::sqrt(std::max(0.0, radicand));
+  if (required_inter_robot_distance != nullptr) {
+    const int polygon_robot_count = std::max(3, num_robot);
+    *required_inter_robot_distance =
+        2.0 * required_radius * std::sin(M_PI / static_cast<double>(polygon_robot_count));
+  }
+  return required_radius <= vvcm.formation_radius + 1e-9;
+}
+
+std::vector<int> CollectUncrossableObstacles(const std::vector<int>& obstacle_indices,
+                                             const std::shared_ptr<Environment>& env,
+                                             int num_robot) {
+  std::vector<int> uncrossable_obstacles;
+  for (int obstacle_index : obstacle_indices) {
+    if (obstacle_index < 0 ||
+        obstacle_index >= static_cast<int>(env->heights().size())) {
+      continue;
+    }
+
+    double required_radius = 0.0;
+    if (!TryComputeAnalyticalLiftRadius(env->heights()[obstacle_index], num_robot, required_radius)) {
+      AppendUniqueObstacle(uncrossable_obstacles, obstacle_index);
+    }
+  }
+  return uncrossable_obstacles;
 }
 
 }
@@ -702,9 +766,10 @@ bool ObstacleIntersecting(const std::vector<Point>& poly_robot, std::shared_ptr<
   }
   else {
     obs_index = obs_index_set[0];
+    max_height = env->heights()[obs_index];
     for (int i = 1; i < obs_index_set.size(); i++) {
       if (env->heights()[obs_index_set[i]] > max_height) {
-        obs_index = i;
+        obs_index = obs_index_set[i];
         max_height = env->heights()[obs_index_set[i]];
       }
     }
@@ -712,10 +777,15 @@ bool ObstacleIntersecting(const std::vector<Point>& poly_robot, std::shared_ptr<
   }
 }
 
-void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons) {
+void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess,
+                                          std::shared_ptr<Environment> env,
+                                          std::vector<double>& height_cons,
+                                          std::vector<int>* obstacle_indices) {
   int num_robot = guess.size();
   height_cons.resize(guess[0].states.size());
-  std::vector<double> collided_obs(guess[0].states.size());
+  if (obstacle_indices != nullptr) {
+    obstacle_indices->assign(guess[0].states.size(), -1);
+  }
   int obs_index;
   std::vector<Point> poly_robot;
   for (int i = 0; i < guess[0].states.size(); i++) {
@@ -726,6 +796,9 @@ void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess, 
     // for (int k = 0; k < env->heights().size(); k++) {
     if (ObstacleIntersecting(poly_robot, env, obs_index)) {
       height_cons[i] = env->heights()[obs_index];
+      if (obstacle_indices != nullptr) {
+        (*obstacle_indices)[i] = obs_index;
+      }
     }
     else {
       height_cons[i] = -1;
@@ -734,25 +807,46 @@ void FormationPlanner::GenerateHeightCons(const std::vector<FullStates>& guess, 
   }
 }
 
-// simple version
-void GenerateDesiredRP(const std::vector<double>& height_cons, std::vector<double>& height_cons_set) {
+bool GenerateDesiredRP(const std::vector<double>& height_cons,
+                       const std::vector<int>* obstacle_indices,
+                       int num_robot,
+                       std::vector<double>& height_cons_set,
+                       std::vector<int>* impossible_obstacles) {
+  const bool analytical_lift_enabled = GetEnvFlag("CPDOT_ANALYTICAL_LIFT");
+  if (impossible_obstacles != nullptr) {
+    impossible_obstacles->clear();
+  }
+
   VVCM vvcm;
-  // double li = vvcm.xv2 / sqrt(3);
   for (int i = 0; i < height_cons.size(); i++) {
     if (height_cons[i] == -1) {
       height_cons_set[i] = -1;
     }
     else {
-      // double r_oi = sqrt(li * li - pow(vvcm.zr - height_cons[i], 2));
-      // double r_ij = r_oi * sqrt(3);
-      if (height_cons_set[i] == -1) {
-        height_cons_set[i] = vvcm.xv2t;
+      if (analytical_lift_enabled) {
+        double required_radius = 0.0;
+        double required_inter_robot_distance = 0.0;
+        if (!TryComputeAnalyticalLiftRadius(height_cons[i], num_robot, required_radius,
+                                            &required_inter_robot_distance)) {
+          if (impossible_obstacles != nullptr && obstacle_indices != nullptr &&
+              i < static_cast<int>(obstacle_indices->size())) {
+            AppendUniqueObstacle(*impossible_obstacles, (*obstacle_indices)[i]);
+          }
+          return false;
+        }
+        height_cons_set[i] = required_radius;
       }
       else {
-        height_cons_set[i] += vvcm.radius_inc;
+        if (height_cons_set[i] == -1) {
+          height_cons_set[i] = vvcm.xv2t;
+        }
+        else {
+          height_cons_set[i] += vvcm.radius_inc;
+        }
       }
     }
   }
+  return true;
 }
 
 
@@ -775,7 +869,11 @@ bool FormationPlanner::Plan_fm(
   double& avg, double& std,
   double& final_infeasibility,
   double initial_guess_noise_stddev,
-  unsigned int initial_guess_noise_seed) {
+  unsigned int initial_guess_noise_seed,
+  PlanFmDiagnostics* diagnostics) {
+  if (diagnostics != nullptr) {
+    *diagnostics = PlanFmDiagnostics{};
+  }
   std::string package_path = ros::package::getPath("formation_planner");   
   double solve_time = 0.0;
   cost = 0.0;
@@ -891,9 +989,10 @@ bool FormationPlanner::Plan_fm(
   }
   double infeasibility = std::numeric_limits<double>::quiet_NaN();
   std::vector<double> height_cons, height;
+  std::vector<int> height_obs_indices;
   std::vector<double> height_cons_set(guess[0].states.size(), vvcm.xv2t);
   warm_start = 0;
-  GenerateHeightCons(guess, env_, height_cons);
+  GenerateHeightCons(guess, env_, height_cons, &height_obs_indices);
   result = guess;
   while (
   // !CheckHeightCons(result, height_cons, vertice_set, height) || 
@@ -958,8 +1057,17 @@ bool FormationPlanner::Plan_fm(
     }
     // generate inter-distance constraints
     if (!CheckHeightCons(result, height_cons, vertice_set, height)){
-      GenerateHeightCons(guess, env_, height_cons);
-      GenerateDesiredRP(height_cons, height_cons_set);
+      GenerateHeightCons(guess, env_, height_cons, &height_obs_indices);
+      std::vector<int> impossible_obstacles;
+      if (!GenerateDesiredRP(height_cons, &height_obs_indices, guess.size(),
+                             height_cons_set, &impossible_obstacles)) {
+        if (diagnostics != nullptr && !impossible_obstacles.empty()) {
+          diagnostics->failed_due_to_uncrossable_obstacle = true;
+          diagnostics->uncrossable_obstacles = impossible_obstacles;
+        }
+        ROS_ERROR("Analytical lift requires more clearance than the sheet geometry allows.");
+        return false;
+      }
     }
     else if (result_opt.empty() || result_opt[0].tf > result[0].tf) {
       ROS_WARN("Better solution found!");
@@ -973,13 +1081,19 @@ bool FormationPlanner::Plan_fm(
     final_infeasibility = infeasibility;
     solve_time_set.push_back(solve_time);
     guess = result;
-    int max_radius = 0.0; 
+    double max_radius = 0.0; 
     for (int j = 0; j < height_cons_set.size(); j++) {
       if (max_radius < height_cons_set[j]) {
         max_radius = height_cons_set[j];
       }
     }
     if (max_radius > vvcm.formation_radius) {
+      std::vector<int> uncrossable_obstacles =
+          CollectUncrossableObstacles(height_obs_indices, env_, guess.size());
+      if (diagnostics != nullptr && !uncrossable_obstacles.empty()) {
+        diagnostics->failed_due_to_uncrossable_obstacle = true;
+        diagnostics->uncrossable_obstacles = uncrossable_obstacles;
+      }
       ROS_ERROR("Exceed maximum radius!");
       return false;
     }

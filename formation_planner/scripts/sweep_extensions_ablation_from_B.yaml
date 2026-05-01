@@ -1,0 +1,24 @@
+# Two-way extension ablation, starting at:
+# 1. extension B only  (failure-aware combination pruning)
+# 2. extension A + B
+
+n_trials_per_config: 100
+timeout_per_trial_s: 180
+
+pkg_result_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result"
+output_dir: "/home/night/CPDOT2/src/CPDOT2/formation_planner/traj_result/sweep_outputs"
+topo_prm_seed: 277
+offset_random_seed_per_config: true
+seed_stride_per_config: 1000
+
+param_grid:
+  env__CPDOT_FAILURE_PRUNING: [1]
+  env__CPDOT_ANALYTICAL_LIFT: [0, 1]
+  random_seed: [277]
+  opti_t: [1.0]
+  opti_w_a: [1.0]
+  opti_w_omega: [1.0]
+  opti_w_penalty0: [10000.0]
+  opti_w_formation: [1.0]
+  opti_w_topo: [1.0]
+  opti_w_sfc: [1.0]

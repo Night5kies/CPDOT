@@ -19,6 +19,11 @@
 
 namespace formation_planner {
 
+struct PlanFmDiagnostics {
+  bool failed_due_to_uncrossable_obstacle = false;
+  std::vector<int> uncrossable_obstacles;
+};
+
 class FormationPlanner {
 public:
   explicit FormationPlanner(std::shared_ptr<PlannerConfig> config, std::shared_ptr<Environment> env);
@@ -50,8 +55,11 @@ public:
   double& avg, double& std,
   double& final_infeasibility,
   double initial_guess_noise_stddev = 0.0,
-  unsigned int initial_guess_noise_seed = 0u);
-  void GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env, std::vector<double>& height_cons);
+  unsigned int initial_guess_noise_seed = 0u,
+  PlanFmDiagnostics* diagnostics = nullptr);
+  void GenerateHeightCons(const std::vector<FullStates>& guess, std::shared_ptr<Environment> env,
+                          std::vector<double>& height_cons,
+                          std::vector<int>* obstacle_indices = nullptr);
 
 private:
   std::shared_ptr<PlannerConfig> config_;

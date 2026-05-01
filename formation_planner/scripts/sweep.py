@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 
+ENV_PREFIX = "env__"
+
 FAILURE_COLUMNS = [
     "num_robot",
     "opti_t",
@@ -33,6 +35,8 @@ FAILURE_COLUMNS = [
     "opti_w_formation",
     "opti_w_topo",
     "opti_w_sfc",
+    "analytical_lift_enabled",
+    "failure_pruning_enabled",
     "seed",
     "trial",
     "trial_success",
@@ -51,6 +55,10 @@ FAILURE_COLUMNS = [
     "inner_iters",
     "tf_s",
     "distance_m",
+    "outer_candidates_considered",
+    "outer_candidates_pruned",
+    "outer_ocp_attempts",
+    "uncrossable_failure",
     "config_timed_out",
 ]
 
@@ -61,6 +69,17 @@ def set_rosparam(name: str, value):
         check=True,
         capture_output=True,
     )
+
+
+def split_launch_params(params: dict) -> Tuple[Dict, Dict]:
+    ros_params = {}
+    env_vars = {}
+    for key, value in params.items():
+        if key.startswith(ENV_PREFIX):
+            env_vars[key[len(ENV_PREFIX):]] = str(value)
+        else:
+            ros_params[key] = value
+    return ros_params, env_vars
 
 
 def expand_configs(cfg: dict) -> List[Dict]:
@@ -90,6 +109,8 @@ def expand_configs(cfg: dict) -> List[Dict]:
 
 def make_failure_rows(params: dict, n_trials: int, timed_out: bool) -> List[Dict]:
     seed = params.get("random_seed", 42)
+    analytical_lift_enabled = int(params.get(f"{ENV_PREFIX}CPDOT_ANALYTICAL_LIFT", 0))
+    failure_pruning_enabled = int(params.get(f"{ENV_PREFIX}CPDOT_FAILURE_PRUNING", 0))
     rows = []
     for trial in range(n_trials):
         row = {
@@ -101,6 +122,8 @@ def make_failure_rows(params: dict, n_trials: int, timed_out: bool) -> List[Dict
             "opti_w_formation": params.get("opti_w_formation", 1.0),
             "opti_w_topo": params.get("opti_w_topo", 1.0),
             "opti_w_sfc": params.get("opti_w_sfc", 1.0),
+            "analytical_lift_enabled": analytical_lift_enabled,
+            "failure_pruning_enabled": failure_pruning_enabled,
             "seed": seed,
             "trial": trial,
             "trial_success": 0,
@@ -119,6 +142,10 @@ def make_failure_rows(params: dict, n_trials: int, timed_out: bool) -> List[Dict
             "inner_iters": -1,
             "tf_s": -1,
             "distance_m": -1,
+            "outer_candidates_considered": -1,
+            "outer_candidates_pruned": -1,
+            "outer_ocp_attempts": -1,
+            "uncrossable_failure": 0,
             "config_timed_out": int(timed_out),
         }
         rows.append(row)
@@ -129,16 +156,20 @@ def launch_config(params: dict, n_trials: int, timeout_s: int, pkg_csv: Path) ->
     if pkg_csv.exists():
         pkg_csv.unlink()
 
+    ros_params, env_vars = split_launch_params(params)
     set_rosparam("n_trials", n_trials)
-    for key, value in params.items():
+    for key, value in ros_params.items():
         set_rosparam(key, value)
 
+    proc_env = os.environ.copy()
+    proc_env.update(env_vars)
     proc = subprocess.Popen(
         ["rosrun", "formation_planner", "topologic_pp"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,
         text=True,
+        env=proc_env,
     )
 
     deadline = time.time() + timeout_s

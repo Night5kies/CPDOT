@@ -26,6 +26,8 @@
 #include "formation_planner/math/generate_obs.h"
 #include "formation_planner/optimizer_interface.h"
 #include <Eigen/Core>
+#include <algorithm>
+#include <cctype>
 #include <math.h>
 #include <random>
 #include <cmath>
@@ -36,6 +38,69 @@
 #include <omp.h>
 
 using namespace formation_planner;
+
+namespace {
+
+bool GetEnvFlag(const char* name) {
+  const char* raw_value = std::getenv(name);
+  if (raw_value == nullptr) {
+    return false;
+  }
+
+  std::string value(raw_value);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return !(value.empty() || value == "0" || value == "false" || value == "off" || value == "no");
+}
+
+void AppendUniqueId(std::vector<int>& values, int value) {
+  if (value < 0) {
+    return;
+  }
+  if (std::find(values.begin(), values.end(), value) == values.end()) {
+    values.push_back(value);
+  }
+}
+
+std::vector<int> CollectCombinationObstacleFootprint(
+    const std::vector<std::vector<Pathset>>& paths_sets,
+    const std::vector<int>& combination,
+    const std::shared_ptr<Environment>& env) {
+  std::vector<int> obstacle_ids;
+  for (int waypoint_index = 0; waypoint_index < paths_sets[0][0].path.size(); ++waypoint_index) {
+    std::vector<Point> poly_robot;
+    for (int robot_index = 0; robot_index < combination.size(); ++robot_index) {
+      poly_robot.push_back(
+          {paths_sets[robot_index][combination[robot_index]].path[waypoint_index].x(),
+           paths_sets[robot_index][combination[robot_index]].path[waypoint_index].y()});
+    }
+
+    for (int obstacle_index = 0; obstacle_index < env->polygons().size(); ++obstacle_index) {
+      std::vector<Point> poly_obs;
+      for (const auto& obstacle_point : env->polygons()[obstacle_index].points()) {
+        poly_obs.push_back({obstacle_point.x(), obstacle_point.y()});
+      }
+      if (ObstacleIntersect(poly_robot, poly_obs)) {
+        AppendUniqueId(obstacle_ids, obstacle_index);
+      }
+    }
+  }
+  return obstacle_ids;
+}
+
+bool CombinationTouchesUncrossableObstacle(const std::vector<int>& combination_obstacles,
+                                           const std::vector<int>& uncrossable_obstacles) {
+  for (int obstacle_id : combination_obstacles) {
+    if (std::find(uncrossable_obstacles.begin(), uncrossable_obstacles.end(), obstacle_id) !=
+        uncrossable_obstacles.end()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 // struct Point {
 //     float x, y;
 // };
@@ -515,9 +580,13 @@ int main(int argc, char **argv) {
   config_->opti_w_formation = opti_w_formation_p;
   config_->opti_w_topo      = opti_w_topo_p;
   config_->opti_w_sfc       = opti_w_sfc_p;
+  const bool analytical_lift_enabled = GetEnvFlag("CPDOT_ANALYTICAL_LIFT");
+  const bool failure_pruning_enabled = GetEnvFlag("CPDOT_FAILURE_PRUNING");
   ROS_INFO("[sweep] n_trials=%d seed=%d topo_seed=%d opti_t=%.2f w_a=%.2f w_omega=%.2f w_form=%.2f w_topo=%.2f w_sfc=%.2f",
            n_trials, random_seed, topo_prm_seed, config_->opti_t, config_->opti_w_a, config_->opti_w_omega,
            config_->opti_w_formation, config_->opti_w_topo, config_->opti_w_sfc);
+  ROS_INFO("[sweep] extension_a(analytical_lift)=%d extension_b(failure_pruning)=%d",
+           analytical_lift_enabled ? 1 : 0, failure_pruning_enabled ? 1 : 0);
 
   // --- CSV output ---
   std::string pkg_path = ros::package::getPath("formation_planner");
@@ -527,11 +596,14 @@ int main(int argc, char **argv) {
   if (csv_new) {
     csv_file << "num_robot,opti_t,opti_w_a,opti_w_omega,opti_w_penalty0,"
              << "opti_w_formation,opti_w_topo,opti_w_sfc,"
+             << "analytical_lift_enabled,failure_pruning_enabled,"
              << "seed,trial,trial_success,solve_success,"
              << "success_strict,success_any_solution,success_feasible,"
              << "final_infeasibility,n_solutions,"
              << "time_topo_s,time_filter_s,time_coarse_s,time_to_s,time_total_s,"
-             << "outer_iters,inner_iters,tf_s,distance_m\n";
+             << "outer_iters,inner_iters,tf_s,distance_m,"
+             << "outer_candidates_considered,outer_candidates_pruned,outer_ocp_attempts,"
+             << "uncrossable_failure\n";
   }
   std::vector<ros::Publisher> path_pub_set;
   interactive_markers::InteractiveMarkerServer server_("/liom_obstacle");
@@ -720,26 +792,31 @@ int main(int argc, char **argv) {
           // }
           ros::Time t1;
           t1 = ros::Time::now();
-          #pragma omp parallel 
-          {
-            std::vector<FullStates> local_best_solution_set;
-            double local_best_tf = std::numeric_limits<double>::max();
-            std::vector<double> local_best_coarse_path_time_set;
-            std::vector<double> local_best_solve_time_set;
-            int local_best_solve_success = 0;
-            int local_best_iteration_num_inner = 0;
-            int local_best_iteration_num_outter = 0;
-            double local_best_cost = 0.0;
-            double local_best_final_infeasibility = std::numeric_limits<double>::quiet_NaN();
-            double local_best_e_max = 0.0;
-            double local_best_e_avg = 0.0;
-            double local_best_avg = 0.0;
-            double local_best_std = 0.0;
-            
-            #pragma omp for nowait
-            // for (int i = 0; i < combinations_new.size(); i++) {
-            int iter_outer_max = 5 > combinations_new.size() ? combinations_new.size() : 5;
-            for (int i = 0; i < iter_outer_max; i++) {
+          const int max_outer_attempts =
+              std::min(5, static_cast<int>(combinations_new.size()));
+          int outer_candidates_considered = 0;
+          int outer_candidates_pruned = 0;
+          int outer_ocp_attempts = 0;
+          int uncrossable_failure = 0;
+          std::vector<int> uncrossable_obstacles;
+
+          if (failure_pruning_enabled) {
+            std::vector<std::vector<int>> combination_obstacles(combinations_new.size());
+            for (int combination_index = 0; combination_index < combinations_new.size(); ++combination_index) {
+              combination_obstacles[combination_index] =
+                  CollectCombinationObstacleFootprint(paths_sets, combinations_new[combination_index], env);
+            }
+
+            for (int combination_index = 0;
+                 combination_index < combinations_new.size() && outer_ocp_attempts < max_outer_attempts;
+                 ++combination_index) {
+              outer_candidates_considered++;
+              if (CombinationTouchesUncrossableObstacle(combination_obstacles[combination_index],
+                                                        uncrossable_obstacles)) {
+                outer_candidates_pruned++;
+                continue;
+              }
+
               std::vector<double> local_coarse_path_time_set;
               std::vector<double> local_solve_time_set;
               int local_iteration_num_inner = 0;
@@ -751,89 +828,176 @@ int main(int argc, char **argv) {
               double local_e_avg = 0.0;
               double local_avg = 0.0;
               double local_std = 0.0;
+              PlanFmDiagnostics diagnostics;
+
               corridors_sets.clear();
               keyPts.clear();
               hPolys_sets.clear();
               corri_vertices_sets.clear();
-              CalCorridors(paths_sets, combinations_new[i], env, polys_inflat, 3, hyperparam_sets, poly_vertices_sets);
-              // for (int i = 0; i < corri_vertices_sets.size(); i++) {
-              //     for (int j = 0; j < corri_vertices_sets[i].size(); j++) {
-              //     auto color_poly = visualization::Color::Magenta;
-              //     color_poly.set_alpha(0.1);
-              //     visualization::PlotPolygon(math::Polygon2d(corri_vertices_sets[i][j]), 0.1, color_poly, 0, "Corridor" + std::to_string(i) + std::to_string(j));
-              //   }
-              // }
-              // visualization::Trigger();  
+              std::vector<std::vector<std::vector<std::vector<double>>>> local_hyperparam_sets;
+              std::vector<std::vector<std::vector<math::Vec2d>>> local_poly_vertices_sets;
+              CalCorridors(paths_sets, combinations_new[combination_index], env, polys_inflat, 3,
+                            local_hyperparam_sets, local_poly_vertices_sets);
+
               std::vector<FullStates> local_solution_set = solution_set;
               for (int ind_c = 0; ind_c < num_robot; ind_c++) {
                 local_solution_set[ind_c].states.clear();
                 local_solution_set[ind_c].tf = 0.1;
               }
-              // if (raw_paths.size() >= 3) {
-                // if(!planner_->Plan(solution, start_set[2], goal_set[2], iris_problem, solution, coarse_path_time, solve_time_leader, show_cr, corridors_sets[2])) {
-                //   ROS_ERROR("re-plan trajectory optimization failed!");
-                // }
-              bool plan_succeeded = planner_->Plan_fm(
-                local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set, 
-                local_solve_time_set, show_cr, polys_inflat_, hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost, local_solve_success,
-                local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility,
-                solver_initial_noise_stddev, static_cast<unsigned int>(random_seed + case_num));
-              bool has_local_solution =
-                !local_solution_set.empty() && !local_solution_set[0].states.empty();
-              if (has_local_solution) {
-                double current_tf = local_solution_set[0].tf;
-                if (current_tf < local_best_tf) {
-                  local_best_tf = current_tf;
-                  local_best_solution_set = local_solution_set;
-                  local_best_coarse_path_time_set = local_coarse_path_time_set;
-                  local_best_solve_time_set = local_solve_time_set;
-                  local_best_solve_success = local_solve_success;
-                  local_best_iteration_num_inner = local_iteration_num_inner;
-                  local_best_iteration_num_outter = local_iteration_num_outter + 1;
-                  local_best_cost = local_cost;
-                  local_best_final_infeasibility = local_final_infeasibility;
-                  local_best_e_max = local_e_max;
-                  local_best_e_avg = local_e_avg;
-                  local_best_avg = local_avg;
-                  local_best_std = local_std;
+
+              outer_ocp_attempts++;
+	              bool plan_succeeded = planner_->Plan_fm(
+	                  local_solution_set, start_set, goal_set, iris_problem, local_solution_set,
+	                  local_coarse_path_time_set, local_solve_time_set, show_cr, polys_inflat_,
+	                  local_hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost,
+	                  local_solve_success, local_e_max, local_e_avg, local_avg, local_std,
+	                  local_final_infeasibility, solver_initial_noise_stddev,
+	                  static_cast<unsigned int>(random_seed + case_num), &diagnostics);
+
+              if (diagnostics.failed_due_to_uncrossable_obstacle) {
+                uncrossable_failure = 1;
+                for (int obstacle_id : diagnostics.uncrossable_obstacles) {
+                  AppendUniqueId(uncrossable_obstacles, obstacle_id);
                 }
               }
-              if(!plan_succeeded) {
-                #pragma omp critical 
-                {
-                  if (has_local_solution) {
-                    ROS_WARN("re-plan did not fully converge; keeping best generated solution set "
-                             "(n=%zu, final_infeasibility=%g, solve_success=%d)",
-                             local_solution_set.size(), local_final_infeasibility, local_solve_success);
-                  } else {
-                    ROS_ERROR("re-plan trajectory optimization failed without producing a usable solution!");
-                  }
+
+              bool has_local_solution =
+                  !local_solution_set.empty() && !local_solution_set[0].states.empty();
+              if (has_local_solution && local_solution_set[0].tf < best_tf) {
+                best_tf = local_solution_set[0].tf;
+                solution_set_opt = local_solution_set;
+                coarse_path_time_set = local_coarse_path_time_set;
+                solve_time_set = local_solve_time_set;
+                solve_success = local_solve_success;
+                iteration_num_inner = local_iteration_num_inner;
+                iteration_num_outter = outer_ocp_attempts;
+                cost = local_cost;
+                final_infeasibility = local_final_infeasibility;
+                e_max = local_e_max;
+                e_avg = local_e_avg;
+                avg = local_avg;
+                std = local_std;
+              }
+
+              if (!plan_succeeded) {
+                if (has_local_solution) {
+                  ROS_WARN("re-plan did not fully converge; keeping best generated solution set "
+                           "(n=%zu, final_infeasibility=%g, solve_success=%d)",
+                           local_solution_set.size(), local_final_infeasibility, local_solve_success);
+                } else {
+                  ROS_ERROR("re-plan trajectory optimization failed without producing a usable solution!");
                 }
-                local_iteration_num_outter++;
                 continue;
               }
-              else {
-                local_iteration_num_outter++;
-                break;
-              }
+              break;
             }
-            
-            #pragma omp critical 
+          } else {
+            outer_candidates_considered = max_outer_attempts;
+            outer_ocp_attempts = max_outer_attempts;
+            #pragma omp parallel
             {
-              if (local_best_tf < best_tf) {
-                best_tf = local_best_tf;
-                solution_set_opt = local_best_solution_set;
-                coarse_path_time_set = local_best_coarse_path_time_set;
-                solve_time_set = local_best_solve_time_set;
-                solve_success = local_best_solve_success;
-                iteration_num_inner = local_best_iteration_num_inner;
-                iteration_num_outter = local_best_iteration_num_outter;
-                cost = local_best_cost;
-                final_infeasibility = local_best_final_infeasibility;
-                e_max = local_best_e_max;
-                e_avg = local_best_e_avg;
-                avg = local_best_avg;
-                std = local_best_std;
+              std::vector<FullStates> local_best_solution_set;
+              double local_best_tf = std::numeric_limits<double>::max();
+              std::vector<double> local_best_coarse_path_time_set;
+              std::vector<double> local_best_solve_time_set;
+              int local_best_solve_success = 0;
+              int local_best_iteration_num_inner = 0;
+              int local_best_iteration_num_outter = 0;
+              double local_best_cost = 0.0;
+              double local_best_final_infeasibility = std::numeric_limits<double>::quiet_NaN();
+              double local_best_e_max = 0.0;
+              double local_best_e_avg = 0.0;
+              double local_best_avg = 0.0;
+              double local_best_std = 0.0;
+
+              #pragma omp for nowait
+              for (int i = 0; i < max_outer_attempts; i++) {
+                std::vector<double> local_coarse_path_time_set;
+                std::vector<double> local_solve_time_set;
+                int local_iteration_num_inner = 0;
+                int local_iteration_num_outter = 0;
+                double local_cost = 0.0;
+                int local_solve_success = 0;
+                double local_final_infeasibility = std::numeric_limits<double>::quiet_NaN();
+                double local_e_max = 0.0;
+                double local_e_avg = 0.0;
+                double local_avg = 0.0;
+                double local_std = 0.0;
+	                corridors_sets.clear();
+	                keyPts.clear();
+	                hPolys_sets.clear();
+	                corri_vertices_sets.clear();
+	                std::vector<std::vector<std::vector<std::vector<double>>>> local_hyperparam_sets;
+	                std::vector<std::vector<std::vector<math::Vec2d>>> local_poly_vertices_sets;
+	                CalCorridors(paths_sets, combinations_new[i], env, polys_inflat, 3,
+	                             local_hyperparam_sets, local_poly_vertices_sets);
+	                std::vector<FullStates> local_solution_set = solution_set;
+                for (int ind_c = 0; ind_c < num_robot; ind_c++) {
+                  local_solution_set[ind_c].states.clear();
+                  local_solution_set[ind_c].tf = 0.1;
+                }
+	                bool plan_succeeded = planner_->Plan_fm(
+	                  local_solution_set, start_set, goal_set, iris_problem, local_solution_set, local_coarse_path_time_set,
+	                  local_solve_time_set, show_cr, polys_inflat_, local_hyperparam_sets, path_pub_set, local_iteration_num_inner, local_cost, local_solve_success,
+	                  local_e_max, local_e_avg, local_avg, local_std, local_final_infeasibility,
+	                  solver_initial_noise_stddev, static_cast<unsigned int>(random_seed + case_num), nullptr);
+                bool has_local_solution =
+                  !local_solution_set.empty() && !local_solution_set[0].states.empty();
+                if (has_local_solution) {
+                  double current_tf = local_solution_set[0].tf;
+                  if (current_tf < local_best_tf) {
+                    local_best_tf = current_tf;
+                    local_best_solution_set = local_solution_set;
+                    local_best_coarse_path_time_set = local_coarse_path_time_set;
+                    local_best_solve_time_set = local_solve_time_set;
+                    local_best_solve_success = local_solve_success;
+                    local_best_iteration_num_inner = local_iteration_num_inner;
+                    local_best_iteration_num_outter = local_iteration_num_outter + 1;
+                    local_best_cost = local_cost;
+                    local_best_final_infeasibility = local_final_infeasibility;
+                    local_best_e_max = local_e_max;
+                    local_best_e_avg = local_e_avg;
+                    local_best_avg = local_avg;
+                    local_best_std = local_std;
+                  }
+                }
+                if(!plan_succeeded) {
+                  #pragma omp critical
+                  {
+                    if (has_local_solution) {
+                      ROS_WARN("re-plan did not fully converge; keeping best generated solution set "
+                               "(n=%zu, final_infeasibility=%g, solve_success=%d)",
+                               local_solution_set.size(), local_final_infeasibility, local_solve_success);
+                    } else {
+                      ROS_ERROR("re-plan trajectory optimization failed without producing a usable solution!");
+                    }
+                  }
+                  local_iteration_num_outter++;
+                  continue;
+                }
+                else {
+                  local_iteration_num_outter++;
+                  break;
+                }
+              }
+
+              #pragma omp critical
+              {
+                if (local_best_tf < best_tf) {
+                  best_tf = local_best_tf;
+                  solution_set_opt = local_best_solution_set;
+                  coarse_path_time_set = local_best_coarse_path_time_set;
+                  solve_time_set = local_best_solve_time_set;
+                  solve_success = local_best_solve_success;
+                  iteration_num_inner = local_best_iteration_num_inner;
+                  iteration_num_outter = local_best_iteration_num_outter;
+                  cost = local_best_cost;
+                  final_infeasibility = local_best_final_infeasibility;
+                  e_max = local_best_e_max;
+                  e_avg = local_best_e_avg;
+                  avg = local_best_avg;
+                  std = local_best_std;
+                }
               }
             }
           }
@@ -930,6 +1094,8 @@ int main(int argc, char **argv) {
                    << config_->opti_w_formation << ","
                    << config_->opti_w_topo << ","
                    << config_->opti_w_sfc << ","
+                   << (analytical_lift_enabled ? 1 : 0) << ","
+                   << (failure_pruning_enabled ? 1 : 0) << ","
                    << random_seed << ","
                    << case_num << ","
                    << trial_success << ","
@@ -947,7 +1113,11 @@ int main(int argc, char **argv) {
                    << (int)new_vector[1] << ","  // outer iters
                    << (int)new_vector[2] << ","  // inner iters
                    << new_vector[4] << ","   // final tf
-                   << new_vector[0] << "\n"; // path distance
+                   << new_vector[0] << ","
+                   << outer_candidates_considered << ","
+                   << outer_candidates_pruned << ","
+                   << outer_ocp_attempts << ","
+                   << uncrossable_failure << "\n";
           csv_file.flush();
 
           completed_trials++;
