@@ -79,6 +79,10 @@ $ rosdep install --from-paths src --ignore-src -r -y
 $ catkin_make --cmake-args -DMOSEK_DIR=/home/yourname/mosek/7
 ```
 
+## Reproducing Results
+
+Step-by-step instructions for rebuilding the planner, running the weight ablation, running the extension ablation, and locating the final CSV outputs are in [REPRODUCING_RESULTS.md](REPRODUCING_RESULTS.md).
+
 ## Parameter values in the simulation
 | **Parameter**                                | **Value**         | **Description**                          |
 |----------------------------------------------|-------------------|------------------------------------------|
